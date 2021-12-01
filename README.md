@@ -5,3 +5,5 @@ advent of code 2021 in z80 assembly for ti83+ family calculators
 uses some DoorsCS routines for now, might convert to my own later.
 
 code in `source/`. use `./compile.sh DAYXX` or `./compile.bat DAYXX` to compile a day. copy from `exec/` to calculator and run for results. compilation needs mono installed on linux.
+
+For now im just putting the input data at the bottom of the code but we'll see how things go
