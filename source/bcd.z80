@@ -1,0 +1,86 @@
+.module BCD
+;Converts a 24bit int at HL to BCD
+;Convert to BCD with double dabble
+;Handles up to a 6 digit number
+_NUM_DIGITS = 6
+.var _NUM_DIGITS, bcdRam
+.var 3, bcdSource
+ConvertToBCD:
+    ld de,bcdSource
+    ld bc,3
+    ldir
+    ld ix,bcdSource
+
+    xor a
+    ld hl,bcdRam
+    ld b,_NUM_DIGITS
+_zeroScratch:
+    ld (hl),a
+    inc hl
+    djnz _zeroScratch
+
+    ld b,24
+    _bcdConvLp:
+        ;Do increment
+        ld c,_NUM_DIGITS
+        ld hl,bcdRam
+        _bcdIncLp:
+            ld a,(hl)
+            cp 5
+            jr c,$+4
+            add a,3
+            ld (hl),a
+            inc hl
+            dec c
+            jr nz,_bcdIncLp
+
+        sla (ix)
+        rl (ix + 1)
+        rl (ix + 2)
+
+        ld c,_NUM_DIGITS
+        ld hl,bcdRam
+        _bcdShiftLp:
+            ld a,(hl)
+            rla
+            bit 4,a
+            jr z,{@}
+            and %1111
+            scf ;Set carry if bit 4 set
+            @:
+            ld (hl),a
+            inc hl
+            dec c
+            jr nz,_bcdShiftLp
+        djnz _bcdConvLp
+    ret
+
+;Displays the 6 digit BCD value at HL
+;1 byte per digit
+DispBCD:
+    ld de,_NUM_DIGITS - 1
+    add hl,de ;Go to end
+
+    ;Skip leading zeroes, except if the value IS zero
+    ld b,_NUM_DIGITS - 1
+_skipLeadingZeroes:
+    ld a,(hl)
+    or a
+    jr nz,{@}
+    dec hl
+    djnz _skipLeadingZeroes
+@:
+    inc b ;B = num digits to display
+_dispBCDDigits:
+    ld a,(hl)
+    push hl
+    push bc
+    call DrawNum
+    pop bc
+    pop hl
+    dec hl
+    djnz _dispBCDDigits
+    ei
+    ret
+
+.endmodule
