@@ -18,7 +18,10 @@ Init:
 Description:
     .db "day 02",0
 
+.include "source/float.z80"
 Start:
+
+Main:
     bcall(_ClrScrnFull)
 
 .varloc saferam1, 768
@@ -112,20 +115,9 @@ Part01Done:
     horiz = part02+11
     aim = part02+22
 
-    ; init floats
-    ld hl,part02
-    xor a
-    ld b,33
-    _initFloats:
-        ld (hl),a
-        inc hl
-        djnz _initFloats
-
-    ; init exponents to $80 = 10^0
-    ld a,$80
-    ld (depth + 1),a
-    ld (horiz + 1),a
-    ld (aim + 1),a
+    fp_zero(depth)
+    fp_zero(horiz)
+    fp_zero(aim)
 
     ; hl can point to data for us
     ld hl,INPUT_START
@@ -139,6 +131,9 @@ Part02Lp:
     inc hl
     push hl
 
+    push af
+    fp_store_dec1(OP2, c)
+    pop af
 
     cp 'u'
     jp z,Part02Up
@@ -150,144 +145,44 @@ Part02Lp:
     jp Part02Done
 
 Part02Up:
-    ; sign of OP2 is negative
-    ld a,$80
-    ld (OP2),a
+    fp_set_sign(OP2)
     jp Part02AdjustAim
 Part02Down:
-    xor a
-    ld (OP2),a
     ; fallthru
 Part02AdjustAim:
     ; increase aim by c
 
-    ; clear OP2, except for sign which we already set
-    ld hl,OP2 + 1
-    xor a
-    .repeat 10
-    ld (hl),a
-    inc hl
-    .loop
-    ; set OP2 to c
-    ; exponent = 1
-    ld hl,OP2 + 1
-    ld (hl),$81
-    inc hl
-    ld (hl),c
-
-    ; copy aim to OP1
-    ld hl,aim
-    ld de,OP1
-    ld bc,11
-    ldir
-
-    ; add
+    fp_ld(OP1, aim)
     b_call(_FPAdd)
-
-    ; copy OP1 to aim
-    ld hl,OP1
-    ld de,aim
-    ld bc,11
-    ldir
+    fp_ld(aim, OP1)
     jp Part02Lp
 
 Part02Forward:
     push bc
 
-    ; set OP2 = c
-    ld hl,OP2
-    xor a
-    .repeat 11
-    ld (hl),a
-    inc hl
-    .loop
-    ; set OP2 to c
-    ; exponent = 1
-    ld hl,OP2 + 1
-    ld (hl),$81
-    inc hl
-    ld (hl),c
-
-    ; copy horizontal to OP1
-    ld hl,horiz
-    ld de,OP1
-    ld bc,11
-    ldir
-
-    ; add distance to horziontal
+    fp_ld(OP1, horiz)
     b_call(_FPAdd)
-
-    ; store horizontal
-    ld hl,OP1
-    ld de,horiz
-    ld bc,11
-    ldir
+    fp_ld(horiz, OP1)
 
     pop bc
-    ; set OP2 = c
-    ld hl,OP2
-    xor a
-    .repeat 11
-    ld (hl),a
-    inc hl
-    .loop
-    ; set OP2 to c
-    ; exponent = 0
-    ld hl,OP2 + 1
-    ld (hl),$81
-    inc hl
-    ld (hl),c
-
-    ; Copy aim to OP1
-    ld hl,aim
-    ld de,OP1
-    ld bc,11
-    ldir
-
-    ; Multiply aim by distance
-    b_call(_FPMult)
-
-    ; Copy depth to OP2
-    ld hl,depth
-    ld de,OP2
-    ld bc,11
-    ldir
-
-
-    ; Add aim * distance to depth
-    b_call(_FPAdd)
-
-    ; store depth
-    ld hl,OP1
-    ld de,depth
-    ld bc,11
-    ldir
-
+    fp_store_dec1(OP2, c)
+    fp_ld(OP1, aim)
+    b_call(_FPMult)    ; OP1 = aim * forward distance
+    fp_ld(OP2, depth)
+    b_call(_FPAdd)     ; Add aim * forward distance to depth
+    fp_ld(depth, OP1)
     jp Part02Lp
 
 Part02Done:
     pop hl ; discard extra stack value
 
     ; ok so now we just need to multiply depth by X
-    ld hl,depth
-    ld de,OP1
-    ld bc,11
-    ldir
-
-    ld hl,horiz
-    ld de,OP2
-    ld bc,11
-    ldir
-
+    fp_ld(OP1, depth)
+    fp_ld(OP2, horiz)
     b_call(_FPMult)
 
+    fp_print_int(1, 0, OP1)
 
-    ld a,1
-    ld (curRow),a
-    xor a
-    ld (curCol),a
-    ld hl,OP1
-    call DispBCDFromFloat
     b_call(_GetKey)
     ret
 

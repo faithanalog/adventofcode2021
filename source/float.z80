@@ -1,0 +1,85 @@
+; load lhs to OP1
+; load rhs to OP2
+; exec op
+; copy result to dst
+.deflong fp_op(op, lhs, rhs, dst)
+    ld hl,lhs
+    ld de,OP1
+    ld bc,11
+    ldir
+
+    ; DE pointing to OP2 now
+    ld hl,rhs
+    ; B is still 0
+    ld c,11
+    ldir
+
+    b_call(op)
+
+    ld hl,OP1
+    ld de,dst
+    ld bc,11
+    ldir
+.enddeflong
+
+.deflong fp_ld(dst, src)
+    ld hl,src
+    ld de,dst
+    ld bc,11
+    ldir
+.enddeflong
+
+.deflong fp_zero(dst)
+    ld a,$80 ; exponent 10^0
+    ld (dst + 1),a
+    xor a
+    ld (dst),a
+    ld (dst + 2),a
+    ld (dst + 3),a
+    ld (dst + 4),a
+    ld (dst + 5),a
+    ld (dst + 6),a
+    ld (dst + 7),a
+    ld (dst + 8),a
+    ld (dst + 9),a
+    ld (dst + 10),a
+.enddeflong
+
+; store a reg holding a single digit in dst
+.deflong fp_store_dec1(dst, reg)
+    ; happens first in case reg is a
+    ld a,reg
+    ld (dst + 2),a 
+    ld a,$81 ; exponent 10^1
+    ld (dst + 1),a
+    xor a
+    ld (dst),a
+    ld (dst + 3),a
+    ld (dst + 4),a
+    ld (dst + 5),a
+    ld (dst + 6),a
+    ld (dst + 7),a
+    ld (dst + 8),a
+    ld (dst + 9),a
+    ld (dst + 10),a
+    
+.enddeflong
+
+.deflong fp_set_sign(dst)
+    ld a,$80
+    ld (dst),a
+.enddeflong
+
+.deflong fp_rst_sign(dst)
+    ld a,0
+    ld (dst),a
+.enddeflong
+
+.deflong fp_print_int(row, col, src)
+    ld a,row
+    ld (curRow),a
+    ld a,col
+    ld (curCol),a
+    ld hl,src
+    call DispBCDFromFloat
+.enddeflong
