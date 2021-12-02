@@ -1,0 +1,1322 @@
+.nolist
+.global
+#include "ti83plus.inc"
+#include "dcs7.inc"
+.endglobal
+.variablename DAY02
+.list
+    .org progstart
+    .db $BB,$6D
+Init:
+    xor d
+    ret
+    jr Start
+    .dw Description
+    .db $07,$00
+    .dw $0000
+    .dw $0000
+Description:
+    .db "day 02",0
+
+Start:
+    bcall(_ClrScrnFull)
+
+.varloc saferam1, 768
+
+; Part 1. this is simple. for each direction, add to X or Y coordinate
+; We will use
+; HL = X
+; DE = Y
+; BC = operand
+; IX = input
+;
+; Each interation expects these registers in these states, but we'll use
+; ex de,hl to do math on hl
+
+    ld ix,INPUT_START
+    ld hl,0
+    ld de,0
+    ld bc,0
+
+Part01Lp:
+    ld a,(ix)
+    ld c,(ix + 1)
+    inc ix
+    inc ix
+
+    cp 'u'
+    jp z,Part01Up
+    cp 'd'
+    jp z,Part01Down
+    cp 'f'
+    jp z,Part01Forward
+    ; Anything else, break out of loop
+    jp Part01Done
+
+Part01Forward:
+    add hl,bc
+    jp Part01Lp
+
+Part01Up:
+    ex de,hl
+    or a ; clear carry
+    sbc hl,bc
+    ex de,hl
+    jp Part01Lp
+
+Part01Down:
+    ex de,hl
+    add hl,bc
+    ex de,hl
+    jp Part01Lp
+
+Part01Done:
+    ; Now we need to multiply X by Y. we move HL to BC for the mult
+    ld b,h
+    ld c,l
+    call mult16by16
+
+    ; copy to ram for bcd display routine
+    .var 4, output_value
+    ld (output_value),hl
+    ld (output_value + 2),de
+    ld hl,output_value
+    call ConvertToBCD
+
+
+    ld a,0
+    ld (curRow),a
+    ld (curCol),a
+    ld hl,bcdRam
+    call DispBCD
+
+
+; For part 2 we do something completely different. The numbers we need to
+; deal with for the depth simply won't fit in a 16-bit integer so rather
+; than implement bigint math we're going to just use TIOS's 11-byte floats
+; to do the math for us.
+;
+; Float have the layout
+; byte sign
+; byte exponent
+; byte[7] significand (binary coded decimal)
+; byte[2] guard (extra precision)
+; since all the values are one-digit, we dont need to do any BCD conversion...
+;
+; OP1: accumulator
+; OP2: operand
+
+
+    .var 33, part02
+    depth = part02+0
+    horiz = part02+11
+    aim = part02+22
+
+    ; init floats
+    ld hl,part02
+    xor a
+    ld b,33
+    _initFloats:
+        ld (hl),a
+        inc hl
+        djnz _initFloats
+
+    ; init exponents to $80 = 10^0
+    ld a,$80
+    ld (depth + 1),a
+    ld (horiz + 1),a
+    ld (aim + 1),a
+
+    ; hl can point to data for us
+    ld hl,INPUT_START
+    push hl
+
+Part02Lp:
+    pop hl
+    ld a,(hl)
+    inc hl
+    ld c,(hl)
+    inc hl
+    push hl
+
+
+    cp 'u'
+    jp z,Part02Up
+    cp 'd'
+    jp z,Part02Down
+    cp 'f'
+    jp z,Part02Forward
+
+    jp Part02Done
+
+Part02Up:
+    ; sign of OP2 is negative
+    ld a,$80
+    ld (OP2),a
+    jp Part02AdjustAim
+Part02Down:
+    xor a
+    ld (OP2),a
+    ; fallthru
+Part02AdjustAim:
+    ; increase aim by c
+
+    ; clear OP2, except for sign which we already set
+    ld hl,OP2 + 1
+    xor a
+    .repeat 10
+    ld (hl),a
+    inc hl
+    .loop
+    ; set OP2 to c
+    ; exponent = 1
+    ld hl,OP2 + 1
+    ld (hl),$81
+    inc hl
+    ld (hl),c
+
+    ; copy aim to OP1
+    ld hl,aim
+    ld de,OP1
+    ld bc,11
+    ldir
+
+    ; add
+    b_call(_FPAdd)
+
+    ; copy OP1 to aim
+    ld hl,OP1
+    ld de,aim
+    ld bc,11
+    ldir
+    jp Part02Lp
+
+Part02Forward:
+    push bc
+
+    ; set OP2 = c
+    ld hl,OP2
+    xor a
+    .repeat 11
+    ld (hl),a
+    inc hl
+    .loop
+    ; set OP2 to c
+    ; exponent = 1
+    ld hl,OP2 + 1
+    ld (hl),$81
+    inc hl
+    ld (hl),c
+
+    ; copy horizontal to OP1
+    ld hl,horiz
+    ld de,OP1
+    ld bc,11
+    ldir
+
+    ; add distance to horziontal
+    b_call(_FPAdd)
+
+    ; store horizontal
+    ld hl,OP1
+    ld de,horiz
+    ld bc,11
+    ldir
+
+    pop bc
+    ; set OP2 = c
+    ld hl,OP2
+    xor a
+    .repeat 11
+    ld (hl),a
+    inc hl
+    .loop
+    ; set OP2 to c
+    ; exponent = 0
+    ld hl,OP2 + 1
+    ld (hl),$81
+    inc hl
+    ld (hl),c
+
+    ; Copy aim to OP1
+    ld hl,aim
+    ld de,OP1
+    ld bc,11
+    ldir
+
+    ; Multiply aim by distance
+    b_call(_FPMult)
+
+    ; Copy depth to OP2
+    ld hl,depth
+    ld de,OP2
+    ld bc,11
+    ldir
+
+
+    ; Add aim * distance to depth
+    b_call(_FPAdd)
+
+    ; store depth
+    ld hl,OP1
+    ld de,depth
+    ld bc,11
+    ldir
+
+    jp Part02Lp
+
+Part02Done:
+    pop hl ; discard extra stack value
+
+    ; ok so now we just need to multiply depth by X
+    ld hl,depth
+    ld de,OP1
+    ld bc,11
+    ldir
+
+    ld hl,horiz
+    ld de,OP2
+    ld bc,11
+    ldir
+
+    b_call(_FPMult)
+
+
+    ld a,1
+    ld (curRow),a
+    xor a
+    ld (curCol),a
+    ld hl,OP1
+    call DispBCDFromFloat
+    b_call(_GetKey)
+    ret
+
+
+; bcd library
+.include "source/bcd.z80"
+
+; z80bits DE * BC
+; output DE:HL
+mult16by16:
+    ld hl,0
+
+	sla	e		; optimised 1st iteration
+	rl	d
+	jr	nc,$+4
+	ld	h,b
+	ld	l,c
+
+.repeat 15
+	add	hl,hl		; unroll 15 times
+	rl	e		; ...
+	rl	d		; ...
+	jr	nc,$+6		; ...
+	add	hl,bc		; ...
+	jr	nc,$+3		; ...
+	inc	de		; ...
+.loop
+    ret
+
+
+INPUT_START:
+.db "f", 4
+.db "d", 7
+.db "d", 4
+.db "f", 2
+.db "d", 4
+.db "d", 9
+.db "d", 1
+.db "f", 1
+.db "d", 4
+.db "u", 5
+.db "f", 5
+.db "d", 3
+.db "f", 5
+.db "f", 6
+.db "d", 5
+.db "d", 3
+.db "f", 8
+.db "u", 7
+.db "f", 1
+.db "f", 5
+.db "f", 7
+.db "u", 2
+.db "u", 7
+.db "d", 1
+.db "d", 6
+.db "f", 7
+.db "f", 6
+.db "d", 7
+.db "u", 9
+.db "d", 8
+.db "d", 3
+.db "d", 1
+.db "d", 4
+.db "d", 3
+.db "f", 7
+.db "d", 1
+.db "f", 6
+.db "d", 3
+.db "f", 3
+.db "d", 6
+.db "f", 5
+.db "d", 7
+.db "u", 5
+.db "f", 7
+.db "f", 9
+.db "u", 1
+.db "f", 5
+.db "d", 5
+.db "d", 2
+.db "f", 1
+.db "u", 7
+.db "d", 8
+.db "d", 2
+.db "f", 8
+.db "f", 1
+.db "u", 1
+.db "u", 5
+.db "f", 9
+.db "u", 9
+.db "d", 5
+.db "d", 5
+.db "f", 6
+.db "f", 1
+.db "d", 1
+.db "d", 3
+.db "u", 6
+.db "u", 9
+.db "d", 6
+.db "d", 1
+.db "f", 1
+.db "d", 8
+.db "d", 3
+.db "d", 8
+.db "u", 6
+.db "f", 2
+.db "u", 8
+.db "d", 2
+.db "d", 6
+.db "f", 1
+.db "d", 2
+.db "d", 1
+.db "d", 5
+.db "d", 8
+.db "f", 8
+.db "d", 8
+.db "d", 2
+.db "u", 1
+.db "u", 3
+.db "f", 1
+.db "d", 6
+.db "u", 5
+.db "f", 5
+.db "u", 7
+.db "f", 3
+.db "f", 3
+.db "d", 9
+.db "f", 1
+.db "f", 7
+.db "d", 1
+.db "d", 1
+.db "d", 3
+.db "f", 4
+.db "d", 4
+.db "f", 2
+.db "u", 8
+.db "f", 2
+.db "d", 4
+.db "d", 2
+.db "u", 1
+.db "f", 6
+.db "f", 6
+.db "d", 9
+.db "f", 5
+.db "d", 3
+.db "f", 5
+.db "d", 6
+.db "d", 9
+.db "f", 9
+.db "u", 6
+.db "d", 8
+.db "u", 5
+.db "u", 2
+.db "f", 5
+.db "d", 4
+.db "f", 8
+.db "u", 1
+.db "f", 2
+.db "d", 9
+.db "d", 4
+.db "u", 7
+.db "d", 1
+.db "d", 6
+.db "d", 7
+.db "d", 7
+.db "d", 2
+.db "d", 2
+.db "u", 7
+.db "d", 1
+.db "u", 7
+.db "u", 4
+.db "f", 9
+.db "d", 6
+.db "u", 3
+.db "d", 5
+.db "f", 8
+.db "u", 4
+.db "f", 5
+.db "f", 8
+.db "f", 4
+.db "f", 7
+.db "f", 2
+.db "d", 3
+.db "u", 4
+.db "f", 7
+.db "f", 3
+.db "d", 7
+.db "u", 4
+.db "f", 8
+.db "f", 9
+.db "f", 9
+.db "u", 6
+.db "u", 5
+.db "f", 7
+.db "d", 7
+.db "u", 5
+.db "d", 9
+.db "d", 8
+.db "f", 5
+.db "f", 2
+.db "d", 1
+.db "d", 2
+.db "d", 9
+.db "u", 5
+.db "d", 3
+.db "d", 8
+.db "u", 6
+.db "f", 9
+.db "d", 9
+.db "u", 3
+.db "u", 9
+.db "f", 3
+.db "f", 9
+.db "d", 5
+.db "u", 3
+.db "d", 6
+.db "f", 5
+.db "d", 6
+.db "d", 9
+.db "f", 3
+.db "d", 7
+.db "d", 5
+.db "d", 9
+.db "f", 8
+.db "d", 8
+.db "f", 8
+.db "f", 2
+.db "u", 6
+.db "d", 9
+.db "d", 7
+.db "d", 4
+.db "d", 2
+.db "d", 9
+.db "f", 7
+.db "u", 1
+.db "f", 6
+.db "f", 7
+.db "d", 3
+.db "d", 5
+.db "d", 3
+.db "f", 4
+.db "d", 9
+.db "f", 2
+.db "d", 1
+.db "f", 4
+.db "u", 9
+.db "d", 8
+.db "d", 9
+.db "f", 5
+.db "u", 2
+.db "d", 7
+.db "d", 2
+.db "d", 7
+.db "f", 8
+.db "u", 8
+.db "f", 9
+.db "u", 8
+.db "d", 3
+.db "d", 8
+.db "f", 2
+.db "u", 7
+.db "f", 4
+.db "u", 8
+.db "f", 6
+.db "f", 6
+.db "f", 4
+.db "f", 3
+.db "d", 4
+.db "u", 7
+.db "d", 8
+.db "f", 1
+.db "f", 9
+.db "f", 8
+.db "f", 8
+.db "d", 6
+.db "d", 6
+.db "d", 4
+.db "d", 8
+.db "f", 9
+.db "d", 8
+.db "d", 4
+.db "f", 2
+.db "f", 7
+.db "d", 4
+.db "u", 1
+.db "d", 4
+.db "d", 5
+.db "u", 5
+.db "u", 9
+.db "d", 5
+.db "u", 5
+.db "f", 2
+.db "d", 8
+.db "f", 7
+.db "f", 2
+.db "u", 4
+.db "f", 8
+.db "u", 7
+.db "d", 5
+.db "f", 5
+.db "d", 5
+.db "d", 6
+.db "d", 7
+.db "f", 1
+.db "d", 8
+.db "u", 8
+.db "u", 9
+.db "u", 6
+.db "f", 2
+.db "f", 7
+.db "f", 4
+.db "d", 6
+.db "u", 4
+.db "u", 3
+.db "d", 3
+.db "f", 7
+.db "u", 9
+.db "d", 9
+.db "u", 5
+.db "f", 1
+.db "u", 7
+.db "d", 7
+.db "d", 7
+.db "u", 8
+.db "d", 3
+.db "f", 6
+.db "d", 6
+.db "d", 7
+.db "d", 2
+.db "f", 5
+.db "u", 8
+.db "u", 5
+.db "u", 1
+.db "d", 5
+.db "f", 9
+.db "f", 9
+.db "f", 2
+.db "f", 6
+.db "u", 8
+.db "f", 8
+.db "d", 1
+.db "f", 6
+.db "u", 7
+.db "u", 3
+.db "f", 3
+.db "u", 5
+.db "d", 8
+.db "f", 2
+.db "d", 5
+.db "d", 5
+.db "f", 8
+.db "f", 8
+.db "f", 6
+.db "u", 7
+.db "u", 1
+.db "f", 1
+.db "d", 7
+.db "d", 1
+.db "u", 9
+.db "f", 7
+.db "u", 6
+.db "d", 2
+.db "d", 5
+.db "f", 1
+.db "d", 1
+.db "u", 1
+.db "f", 7
+.db "f", 7
+.db "f", 1
+.db "u", 2
+.db "f", 2
+.db "d", 9
+.db "d", 8
+.db "f", 9
+.db "f", 8
+.db "u", 9
+.db "d", 1
+.db "d", 3
+.db "u", 1
+.db "d", 3
+.db "u", 9
+.db "d", 7
+.db "u", 6
+.db "d", 1
+.db "d", 2
+.db "d", 2
+.db "d", 4
+.db "f", 4
+.db "f", 3
+.db "d", 7
+.db "f", 9
+.db "f", 1
+.db "d", 2
+.db "d", 2
+.db "d", 4
+.db "d", 7
+.db "u", 7
+.db "f", 6
+.db "f", 2
+.db "d", 6
+.db "d", 3
+.db "d", 3
+.db "d", 8
+.db "u", 8
+.db "f", 6
+.db "d", 8
+.db "d", 3
+.db "f", 7
+.db "d", 4
+.db "d", 4
+.db "u", 1
+.db "u", 8
+.db "f", 5
+.db "f", 6
+.db "d", 8
+.db "d", 9
+.db "u", 7
+.db "f", 2
+.db "f", 4
+.db "d", 4
+.db "f", 6
+.db "f", 5
+.db "d", 4
+.db "u", 5
+.db "d", 5
+.db "f", 1
+.db "d", 2
+.db "u", 9
+.db "f", 9
+.db "f", 6
+.db "f", 8
+.db "d", 2
+.db "d", 9
+.db "u", 1
+.db "f", 6
+.db "d", 3
+.db "f", 6
+.db "f", 7
+.db "d", 9
+.db "f", 1
+.db "f", 1
+.db "f", 5
+.db "u", 5
+.db "u", 6
+.db "f", 8
+.db "f", 6
+.db "f", 6
+.db "f", 8
+.db "d", 6
+.db "d", 8
+.db "f", 5
+.db "f", 7
+.db "f", 3
+.db "f", 3
+.db "u", 5
+.db "f", 8
+.db "u", 3
+.db "f", 6
+.db "f", 4
+.db "f", 3
+.db "u", 8
+.db "d", 1
+.db "d", 3
+.db "d", 7
+.db "u", 8
+.db "f", 5
+.db "d", 9
+.db "u", 7
+.db "d", 2
+.db "d", 4
+.db "d", 5
+.db "d", 2
+.db "u", 3
+.db "d", 4
+.db "d", 4
+.db "f", 4
+.db "f", 6
+.db "u", 4
+.db "f", 5
+.db "f", 3
+.db "u", 2
+.db "u", 3
+.db "d", 4
+.db "d", 7
+.db "f", 7
+.db "f", 2
+.db "d", 2
+.db "f", 5
+.db "u", 4
+.db "f", 2
+.db "d", 8
+.db "u", 5
+.db "u", 6
+.db "f", 2
+.db "f", 3
+.db "u", 3
+.db "d", 2
+.db "f", 7
+.db "d", 6
+.db "f", 3
+.db "f", 6
+.db "u", 9
+.db "f", 7
+.db "u", 1
+.db "f", 1
+.db "f", 2
+.db "d", 3
+.db "f", 9
+.db "d", 1
+.db "u", 5
+.db "u", 7
+.db "u", 8
+.db "d", 5
+.db "u", 4
+.db "d", 9
+.db "f", 4
+.db "u", 8
+.db "f", 3
+.db "f", 7
+.db "d", 7
+.db "d", 9
+.db "d", 5
+.db "u", 4
+.db "d", 2
+.db "u", 5
+.db "d", 4
+.db "f", 3
+.db "d", 7
+.db "u", 5
+.db "f", 9
+.db "f", 9
+.db "f", 7
+.db "u", 5
+.db "f", 7
+.db "u", 3
+.db "f", 8
+.db "d", 1
+.db "d", 5
+.db "u", 5
+.db "f", 4
+.db "f", 9
+.db "f", 9
+.db "u", 5
+.db "d", 9
+.db "u", 7
+.db "u", 3
+.db "f", 5
+.db "d", 4
+.db "d", 7
+.db "f", 9
+.db "d", 9
+.db "u", 3
+.db "f", 4
+.db "f", 7
+.db "d", 9
+.db "f", 2
+.db "d", 2
+.db "f", 1
+.db "d", 2
+.db "u", 7
+.db "d", 6
+.db "f", 9
+.db "f", 1
+.db "d", 5
+.db "f", 9
+.db "f", 7
+.db "u", 4
+.db "f", 9
+.db "f", 7
+.db "u", 4
+.db "d", 1
+.db "d", 3
+.db "d", 3
+.db "d", 1
+.db "d", 9
+.db "f", 3
+.db "f", 5
+.db "f", 2
+.db "d", 1
+.db "f", 9
+.db "d", 6
+.db "u", 6
+.db "d", 7
+.db "d", 1
+.db "d", 1
+.db "u", 1
+.db "u", 8
+.db "d", 6
+.db "d", 3
+.db "d", 9
+.db "f", 3
+.db "f", 9
+.db "d", 4
+.db "f", 6
+.db "f", 7
+.db "d", 3
+.db "f", 5
+.db "u", 8
+.db "u", 6
+.db "f", 3
+.db "f", 2
+.db "d", 6
+.db "u", 7
+.db "f", 3
+.db "f", 1
+.db "d", 8
+.db "d", 1
+.db "f", 1
+.db "f", 2
+.db "u", 7
+.db "d", 3
+.db "f", 9
+.db "f", 6
+.db "u", 8
+.db "f", 3
+.db "d", 3
+.db "d", 9
+.db "d", 3
+.db "d", 6
+.db "d", 6
+.db "d", 2
+.db "f", 8
+.db "d", 3
+.db "f", 2
+.db "u", 8
+.db "f", 5
+.db "u", 6
+.db "d", 7
+.db "d", 4
+.db "d", 2
+.db "u", 9
+.db "d", 4
+.db "d", 9
+.db "d", 4
+.db "d", 9
+.db "f", 2
+.db "d", 5
+.db "d", 5
+.db "f", 7
+.db "u", 2
+.db "f", 5
+.db "f", 1
+.db "d", 4
+.db "f", 6
+.db "f", 9
+.db "d", 1
+.db "d", 2
+.db "d", 6
+.db "f", 5
+.db "u", 9
+.db "u", 1
+.db "u", 9
+.db "u", 4
+.db "d", 1
+.db "u", 3
+.db "d", 5
+.db "f", 4
+.db "f", 3
+.db "f", 1
+.db "d", 9
+.db "d", 9
+.db "d", 6
+.db "f", 4
+.db "f", 4
+.db "f", 1
+.db "d", 9
+.db "d", 8
+.db "d", 7
+.db "f", 2
+.db "f", 7
+.db "f", 1
+.db "d", 7
+.db "f", 8
+.db "f", 7
+.db "u", 4
+.db "d", 4
+.db "f", 8
+.db "f", 6
+.db "d", 6
+.db "f", 9
+.db "d", 2
+.db "f", 7
+.db "f", 1
+.db "d", 5
+.db "d", 5
+.db "d", 3
+.db "d", 7
+.db "f", 9
+.db "d", 2
+.db "f", 3
+.db "f", 6
+.db "u", 4
+.db "u", 9
+.db "f", 6
+.db "u", 8
+.db "u", 2
+.db "f", 9
+.db "f", 3
+.db "f", 9
+.db "d", 4
+.db "d", 8
+.db "d", 1
+.db "d", 1
+.db "f", 4
+.db "u", 3
+.db "f", 1
+.db "f", 5
+.db "d", 5
+.db "d", 6
+.db "d", 7
+.db "f", 5
+.db "d", 3
+.db "u", 9
+.db "f", 5
+.db "d", 4
+.db "u", 9
+.db "f", 1
+.db "d", 3
+.db "d", 5
+.db "f", 2
+.db "d", 7
+.db "u", 7
+.db "d", 2
+.db "f", 2
+.db "d", 2
+.db "d", 4
+.db "d", 3
+.db "f", 6
+.db "d", 7
+.db "d", 2
+.db "d", 1
+.db "f", 7
+.db "f", 9
+.db "f", 8
+.db "u", 8
+.db "f", 5
+.db "d", 8
+.db "f", 9
+.db "f", 9
+.db "u", 5
+.db "f", 9
+.db "u", 8
+.db "u", 6
+.db "u", 5
+.db "u", 3
+.db "d", 2
+.db "d", 8
+.db "d", 4
+.db "u", 3
+.db "d", 4
+.db "u", 8
+.db "d", 3
+.db "u", 1
+.db "d", 4
+.db "d", 7
+.db "d", 4
+.db "u", 7
+.db "d", 3
+.db "u", 3
+.db "u", 8
+.db "f", 3
+.db "d", 2
+.db "f", 7
+.db "u", 9
+.db "f", 2
+.db "d", 1
+.db "d", 1
+.db "f", 2
+.db "f", 9
+.db "u", 6
+.db "f", 3
+.db "f", 2
+.db "d", 1
+.db "d", 3
+.db "d", 6
+.db "f", 7
+.db "d", 4
+.db "f", 2
+.db "d", 6
+.db "u", 3
+.db "u", 5
+.db "f", 6
+.db "u", 7
+.db "d", 5
+.db "u", 5
+.db "f", 5
+.db "d", 6
+.db "f", 7
+.db "u", 2
+.db "f", 3
+.db "f", 4
+.db "f", 9
+.db "d", 4
+.db "d", 5
+.db "u", 7
+.db "u", 1
+.db "d", 1
+.db "d", 5
+.db "f", 4
+.db "d", 2
+.db "d", 8
+.db "d", 6
+.db "d", 3
+.db "d", 1
+.db "d", 9
+.db "f", 5
+.db "f", 7
+.db "d", 5
+.db "f", 7
+.db "d", 6
+.db "u", 8
+.db "u", 9
+.db "d", 4
+.db "f", 7
+.db "u", 1
+.db "u", 5
+.db "d", 8
+.db "f", 5
+.db "u", 8
+.db "f", 1
+.db "f", 7
+.db "f", 5
+.db "f", 8
+.db "f", 8
+.db "u", 1
+.db "d", 4
+.db "u", 6
+.db "d", 1
+.db "d", 4
+.db "u", 9
+.db "f", 4
+.db "f", 1
+.db "f", 5
+.db "u", 7
+.db "f", 5
+.db "f", 7
+.db "u", 3
+.db "u", 6
+.db "u", 3
+.db "f", 4
+.db "d", 5
+.db "d", 4
+.db "d", 2
+.db "d", 4
+.db "f", 7
+.db "d", 5
+.db "f", 9
+.db "f", 2
+.db "d", 3
+.db "u", 7
+.db "f", 9
+.db "f", 3
+.db "d", 9
+.db "u", 8
+.db "f", 1
+.db "f", 3
+.db "u", 8
+.db "d", 3
+.db "u", 9
+.db "d", 4
+.db "f", 6
+.db "f", 8
+.db "d", 4
+.db "f", 9
+.db "u", 1
+.db "f", 3
+.db "f", 1
+.db "u", 3
+.db "d", 3
+.db "f", 1
+.db "f", 2
+.db "f", 8
+.db "u", 3
+.db "d", 9
+.db "f", 1
+.db "u", 1
+.db "f", 2
+.db "d", 4
+.db "f", 7
+.db "u", 9
+.db "f", 2
+.db "d", 6
+.db "d", 8
+.db "u", 1
+.db "f", 1
+.db "f", 7
+.db "d", 8
+.db "f", 7
+.db "u", 9
+.db "u", 5
+.db "d", 6
+.db "d", 2
+.db "d", 9
+.db "d", 9
+.db "d", 7
+.db "d", 4
+.db "f", 4
+.db "u", 2
+.db "u", 8
+.db "f", 5
+.db "d", 9
+.db "d", 7
+.db "f", 3
+.db "f", 1
+.db "d", 3
+.db "d", 1
+.db "f", 5
+.db "u", 2
+.db "u", 9
+.db "u", 2
+.db "f", 4
+.db "f", 3
+.db "f", 8
+.db "u", 9
+.db "u", 6
+.db "u", 3
+.db "f", 7
+.db "f", 8
+.db "f", 8
+.db "f", 1
+.db "f", 1
+.db "f", 2
+.db "d", 2
+.db "d", 7
+.db "f", 4
+.db "u", 2
+.db "d", 4
+.db "f", 5
+.db "d", 3
+.db "f", 1
+.db "d", 3
+.db "u", 2
+.db "f", 9
+.db "f", 7
+.db "f", 5
+.db "f", 1
+.db "f", 6
+.db "f", 9
+.db "u", 3
+.db "d", 8
+.db "d", 8
+.db "f", 3
+.db "u", 4
+.db "u", 1
+.db "d", 4
+.db "f", 8
+.db "u", 9
+.db "d", 4
+.db "d", 5
+.db "f", 1
+.db "f", 7
+.db "u", 2
+.db "d", 2
+.db "d", 2
+.db "d", 1
+.db "u", 6
+.db "f", 7
+.db "f", 7
+.db "d", 7
+.db "d", 8
+.db "f", 1
+.db "f", 8
+.db "d", 3
+.db "u", 5
+.db "u", 9
+.db "d", 2
+.db "d", 9
+.db "f", 3
+.db "u", 8
+.db "u", 9
+.db "u", 3
+.db "u", 3
+.db "f", 9
+.db "u", 6
+.db "u", 7
+.db "d", 6
+.db "d", 8
+.db "f", 4
+.db "d", 8
+.db "f", 4
+.db "f", 9
+.db "d", 9
+.db "f", 4
+.db "u", 6
+.db "u", 5
+.db "d", 2
+.db "f", 6
+.db "d", 2
+.db "u", 2
+.db "u", 4
+.db "f", 4
+.db "f", 6
+.db "d", 7
+.db "u", 4
+.db "d", 8
+.db "f", 1
+.db "d", 5
+.db "f", 4
+.db "d", 3
+.db "f", 3
+.db "d", 5
+.db "f", 7
+.db "d", 8
+.db "u", 7
+.db "d", 7
+.db "f", 1
+.db "f", 6
+.db "u", 7
+.db "u", 8
+.db "u", 2
+.db "f", 1
+.db "f", 1
+.db "d", 5
+.db "d", 9
+.db "f", 7
+.db "f", 5
+.db "d", 7
+.db "u", 1
+.db "f", 6
+.db "f", 6
+.db "d", 6
+.db "f", 1
+.db "d", 1
+.db "d", 2
+.db "d", 4
+.db "f", 5
+.db "u", 7
+.db "u", 7
+.db "f", 6
+.db "d", 1
+.db "f", 7
+.db 0

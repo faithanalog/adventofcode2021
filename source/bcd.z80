@@ -1,13 +1,13 @@
 .module BCD
-;Converts a 24bit int at HL to BCD
+;Converts a 32bit int at HL to BCD
 ;Convert to BCD with double dabble
-;Handles up to a 6 digit number
-_NUM_DIGITS = 6
+;Handles up to a 14 digit number
+_NUM_DIGITS = 14
 .var _NUM_DIGITS, bcdRam
-.var 3, bcdSource
+.var 4, bcdSource
 ConvertToBCD:
     ld de,bcdSource
-    ld bc,3
+    ld bc,4
     ldir
     ld ix,bcdSource
 
@@ -19,7 +19,7 @@ _zeroScratch:
     inc hl
     djnz _zeroScratch
 
-    ld b,24
+    ld b,32
     _bcdConvLp:
         ;Do increment
         ld c,_NUM_DIGITS
@@ -37,6 +37,7 @@ _zeroScratch:
         sla (ix)
         rl (ix + 1)
         rl (ix + 2)
+        rl (ix + 3)
 
         ld c,_NUM_DIGITS
         ld hl,bcdRam
@@ -55,7 +56,7 @@ _zeroScratch:
         djnz _bcdConvLp
     ret
 
-;Displays the 6 digit BCD value at HL
+;Displays the 14 digit BCD value at HL
 ;1 byte per digit
 DispBCD:
     ld de,_NUM_DIGITS - 1
@@ -75,12 +76,58 @@ _dispBCDDigits:
     ld a,(hl)
     push hl
     push bc
-    call DrawNum
+
+    add a,'0'
+    b_call(_PutC)
+    
     pop bc
     pop hl
     dec hl
     djnz _dispBCDDigits
     ei
+    ret
+
+; HL = float
+DispBCDFromFloat:
+    inc hl
+    ld a,(hl)
+    sub $7F ; number of digits is exponent + 1 but exponent is biased to $80
+    ld b,a
+    inc hl
+
+.repeat 8
+    ld c,(hl)
+    ld a,c
+    rra
+    rra
+    rra
+    rra
+    and $0F
+
+    push hl
+    push bc
+    add a,'0'
+    b_call(_PutC)
+    pop bc
+    pop hl
+
+    dec b
+    ret z
+
+    ld a,c
+    and $0F
+    push hl
+    push bc
+    add a,'0'
+    b_call(_PutC)
+    pop bc
+    pop hl
+
+    dec b
+    ret z
+
+    inc hl
+.loop
     ret
 
 .endmodule
