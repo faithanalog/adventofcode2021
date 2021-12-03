@@ -1,8 +1,8 @@
 .module BCD
-;Converts a 32bit int at HL to BCD
+;Converts a 32bit little-endian int at HL to little-endian BCD at bcdRam
 ;Convert to BCD with double dabble
-;Handles up to a 14 digit number
-_NUM_DIGITS = 14
+;Handles up to a _NUM_DIGITS (12 = max digits on unsigned 32 bit int)
+_NUM_DIGITS = 12
 .var _NUM_DIGITS, bcdRam
 .var 4, bcdSource
 ConvertToBCD:
@@ -56,7 +56,7 @@ _zeroScratch:
         djnz _bcdConvLp
     ret
 
-;Displays the 14 digit BCD value at HL
+;Displays the _NUM_DIGITS digit little-endian BCD value at HL
 ;1 byte per digit
 DispBCD:
     ld de,_NUM_DIGITS - 1
@@ -84,14 +84,17 @@ _dispBCDDigits:
     pop hl
     dec hl
     djnz _dispBCDDigits
-    ei
     ret
 
 ; HL = float
+; display a TI float's integer component with _PutC
 DispBCDFromFloat:
     inc hl
-    ld a,(hl)
-    sub $7F ; number of digits is exponent + 1 but exponent is biased to $80
+    ld a,(hl) ; load exponent
+    sub $80   ; number of digits is exponent + 1 but is biased to $80
+    ret       ; if exponent is negative, no integer component, bail
+    inc a     ; a = exponent + 1
+
     ld b,a
     inc hl
 
@@ -129,5 +132,73 @@ DispBCDFromFloat:
     inc hl
 .loop
     ret
+
+; Convert HL to BCD and store in a TI float pointed to by BC
+fp_store_u16
+    ld de,0
+    jp fp_store_u32
+
+; Convert DE:HL to BCD and store in a TI float pointed to by BC
+.var 4, _intToFloatMem
+fp_store_u32:
+    push bc ; store destination for later
+
+    ld (_intToFloatMem),hl
+    ld (_intToFloatMem + 2),de
+    call ConvertToBCD
+
+    ; so at this point, bcdRam has the digits little endian
+    ; we need to scan from the end like DispBCD to find the first non-zero
+    ld hl,bcdRam + _NUM_DIGITS - 1
+
+    ;Skip leading zeroes, except if the value IS zero
+    ld b,_NUM_DIGITS - 1
+-:
+    ld a,(hl)
+    or a
+    jr nz,{+}
+    dec hl
+    djnz {-}
++:
+    inc b ;B = num digits to display
+    ; so at this point B is the num digits.
+    ; this also lets us calculate our exponent as $80 + b - 1
+    ld a,$7F
+    add a,b
+
+    pop ix ; restore destination float into IX
+    ld (ix + 1),a   ; store exponent
+    xor a
+    ld (ix + 0),a   ; sign is positive
+    ld (ix + 2),a   ; init rest of data to zero (inefficient but easier to implement)
+    ld (ix + 3),a
+    ld (ix + 4),a
+    ld (ix + 5),a
+    ld (ix + 6),a
+    ld (ix + 7),a
+    ld (ix + 8),a
+    ld (ix + 9),a
+    ld (ix + 10),a
+
+    .for _digit, 0, (_NUM_DIGITS / 2) - 1
+        ld a,(hl)
+        inc hl
+        or a
+        rla
+        rla
+        rla
+        rla
+        dec b
+        jr z,{+} ; don't include next digit if that was the last one
+        or (hl)
+        +:
+        ld (ix + _digit + 2),a
+        dec b
+        ret z ; return if either of the digits was the last digit
+        ret c ; 
+    .loop
+    ret ; should never run, but just in case
+    
+
 
 .endmodule

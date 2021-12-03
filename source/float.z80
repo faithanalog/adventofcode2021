@@ -62,7 +62,6 @@
     ld (dst + 8),a
     ld (dst + 9),a
     ld (dst + 10),a
-    
 .enddeflong
 
 .deflong fp_set_sign(dst)
