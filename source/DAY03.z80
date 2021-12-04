@@ -24,7 +24,7 @@ Start:
 Main:
     bcall(_ClrScrnFull)
 
-.varloc saferam2, 531
+.varloc saferam1, 768
     
     ; So part 1 is, generate a value Gamma, where each bit
     ; is determined as the most common bit in the corresponding column in
@@ -269,7 +269,7 @@ Main:
     ld hl,bcdRam
     call DispBCD
 
-    ; Ok, part 2 is very similar but we're doing a couple iterative searches.
+    ; Ok, part 2 is similar but we're doing a couple iterative searches.
     ; For the fist value, we iterate over the input, determine the most
     ; common value in the top bit, and then retain only values with that bit set 
     ; for the next search. we go until there's one value remaining.
@@ -286,48 +286,55 @@ Main:
     ;
     ; Interrupts need to be disabled while we do this tho...
 
+
     di
+    .var 1, oldRamPage
+    in a,(05h)
+    ld (oldRamPage),a
     ld a,05h
     out (05h),a
 
     leftTable = C000h
     rightTable = D000h
 
-    ; First, copy the data set into the left table
-    ld hl,INPUT_START
-    ld de,leftTable
-    ld bc,INPUT_END - INPUT_START ; dont need final flag val
-    ldir
 
     .var 4, lifesupport
 
-    .for _var,0,1 
+    ; assembler abuse
+    ; when reading this, know the rules for anonymous labels
+    ; jp {+} scans forward for the next +: label and jumps to the first it finds
+    ; jp {++} scans forward for the next ++: label and jumps to the first it finds
+    ; and so on.
+    ; {-} is similar but searche backwards for -: labels
+    .for _var,0,1
+        ; First, copy the data set into the left table
+        ld hl,INPUT_START
+        ld de,leftTable
+        ld bc,INPUT_END - INPUT_START ; dont need final flag val
+        ldir
+
         ld bc,INPUT_END - INPUT_START ; dont need final flag val
         .for _byte,0,1
             .for _bit,3 + (_byte * 4),0,-1
-                ; if bc is 0, skip to end
-                ld a,b
-                or c
-                jr z,{3@}
                 push bc
 
+                ; count bits
                 ld hl,leftTable
                 ld d,0
                 -:
                     .if _byte == 1
                         inc hl
                     .endif
+                    dec d
                     bit _bit,(hl)
+                    jr z,$+4
+                    inc d
+                    inc d
                     .if _byte == 0
                         inc hl
                     .endif
                     inc hl
-                    dec d
-                    jr z,$+4
-                    inc d
-                    inc d
-                    dec bc
-                    ld a,b \ or c \ jr nz,{-}
+                    dec bc \ dec bc \ ld a,b \ or c \ jr nz, {-}
 
                 pop bc
 
@@ -335,19 +342,27 @@ Main:
                 ld hl,leftTable
                 ld de,rightTable
 
+                ; O2 (_var == 0) vs CO2 (_var == 1) rules for which values to keep
                 .if _var == 0
                     rla ; test sign bit
-                    jr nc,{@}
+                    jr c,{+++}
                 .else
                     rla ; test sign bit
-                    jr c,{@}
+                    jr nc,{+++}
                     or a
-                    jr z,{@}
+                    jr z,{+++}
                 .endif
 
                 ; Copy ones
                     -:
-                        bit _bit,(hl)
+                        .if _byte == 1
+                            inc hl
+                        .endif
+                        ld a,(hl)
+                        .if _byte == 1
+                            dec hl
+                        .endif
+                        bit _bit,a
                         jr z,{+}
                             ld a,(hl) \ inc hl
                             ld (de),a \ inc de
@@ -358,12 +373,19 @@ Main:
                             inc hl
                             inc hl
                         ++:
-                        dec bc \ ld a,b \ or c \ jr nz, {-}
-                    jr {2@}
+                        dec bc \ dec bc \ ld a,b \ or c \ jr nz, {-}
+                    jr {++++}
                 ; Copy zeroes
-                @:
+                +++:
                     -:
-                        bit _bit,(hl)
+                        .if _byte == 1
+                            inc hl
+                        .endif
+                        ld a,(hl)
+                        .if _byte == 1
+                            dec hl
+                        .endif
+                        bit _bit,a
                         jr nz,{+}
                             ld a,(hl) \ inc hl
                             ld (de),a \ inc de
@@ -374,27 +396,29 @@ Main:
                             inc hl
                             inc hl
                         ++:
-                        dec bc \ ld a,b \ or c \ jr nz, {-}
-                @:
-                ld hl,rightTable
+                        dec bc \ dec bc \ ld a,b \ or c \ jr nz, {-}
+                ++++:
+
+                ; How far did DE move away from rightTable? Thats the new array size
+                ex de,hl
+                ld de,rightTable
                 or a
                 sbc hl,de
 
-                ; if length == 1, done
+
+                ; if length == 2 bytes (one entry), done
                 ld a,h
                 or a
-                jr z,{+}
-                ld a,l
-                dec a
                 jr nz,{+}
-                    ld a,(de)
+                ld a,l
+                cp 2
+                jr nz,{+}
+                    ; swap endian
+                    ld a,(rightTable + 1)
                     ld (lifesupport + (_var * 2)),a
-                    dec de
-                    ld a,(de)
+                    ld a,(rightTable)
                     ld (lifesupport + (_var * 2) + 1),a
-                    ld b,0
-                    ld c,0
-                    jr {@}
+                    jp {++++++}
                 +:
                     ld b,h
                     ld c,l
@@ -403,13 +427,16 @@ Main:
                     ld de,leftTable
                     ldir
                     pop bc
-                @:
             .loop
         .loop
+        ; End of life support variable computation
+        ++++++:
     .loop
 
+    _debug:
+
     ; restore interrupts, mem page
-    ld a,00h
+    xor a
     out (05h),a
     ei
 
@@ -425,9 +452,9 @@ Main:
     ld hl,output_value
     call ConvertToBCD
 
-    ld a,0
-    ld (curRow),a
     ld a,2
+    ld (curRow),a
+    ld a,0
     ld (curCol),a
     ld hl,bcdRam
     call DispBCD
