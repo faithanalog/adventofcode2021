@@ -434,7 +434,12 @@ insertPoint:
     ; We use the low 2 bits of HL and DE to index into the map, and then linear
     ; search to either find the point already or insert it as the high 8 bits, plus a counter
     ;
+    ; could squeeze more space by using another bit for the bucket index and making the counter
+    ; be just one bit, but that complicates logic a lot
+    ;
     ; so 16 buckets of 1024 bytes (300ish entries) where a bucket is
+    ; TODO i dont think thats enough oh gods we need to use multiple ram pages and index into those with some bits
+    ; if we use the top 4 ram pages then we can get 16 * 341 * 4 = 21824 entries
     ; 01LLEE00
     xor a
     rr d
