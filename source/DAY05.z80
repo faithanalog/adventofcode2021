@@ -439,8 +439,9 @@ insertPoint:
     ;
     ; so 16 buckets of 1024 bytes (300ish entries) where a bucket is
     ; TODO i dont think thats enough oh gods we need to use multiple ram pages and index into those with some bits
-    ; if we use the top 4 ram pages then we can get 16 * 341 * 4 = 21824 entries
+    ; if we use the top 4 ram pages then we can get 16 * 512 * 4 = 32768 entries
     ; 01LLEE00
+
     xor a
     rr d
     rr e
@@ -463,7 +464,8 @@ insertPoint:
     ld h,a
     ld l,0
 
-    ; now linear search for a counter = 0
+    ; now linear search for an empty spot (0,0)
+    ; this is only safe because our data set doesnt include any values in the 0-3 range on either axis
     -:
         ld a,(hl)
         inc hl
@@ -471,20 +473,14 @@ insertPoint:
         jp nz,{+}
             ld a,(hl)
             cp e
-            jr nz,{+}
-                ; found, increment counter and return
-                inc hl
-                inc (hl)
-                ret
+            ret z
         +:
-        inc hl
-        ld a,(hl)
+        or (hl)
         inc hl
         or a
         jp nz,{-} ; not empty
     ; at the spot
     ; no safety for overflowing bucket
-    inc (hl) ; increment counter to one
     dec hl
     ld (hl),e
     dec hl
