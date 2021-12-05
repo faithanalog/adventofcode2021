@@ -1,0 +1,923 @@
+.nolist
+.global
+#include "ti83plus.inc"
+#include "dcs7.inc"
+.endglobal
+.variablename DAY05
+.list
+    .org progstart
+    .db $BB,$6D
+Init:
+    xor d
+    ret
+    jr Start
+    .dw Description
+    .db $07,$00
+    .dw $0000
+    .dw $0000
+Description:
+    .db "day 05",0
+
+.include "source/float.z80"
+.varloc saferam1, 768
+Start:
+
+; define offsets for line data
+lx1 = 0
+ly1 = 2
+lx2 = 4
+ly2 = 6
+
+Main:
+    bcall(_ClrScrnFull)
+
+
+
+
+    di
+    ; while we're at it, might as well use iy
+    push iy
+    ; Map bank 5 @ C000h
+    ld a,05h
+    out (05h),a
+    ; 15MHz
+    ld a,1
+    out (20h),a
+
+    ; So we need to calculate line intersections. One way is to just
+    ; draw the lines
+    ;
+    ; Looks like all values are between 0-999.
+    ; 1000 x 1000 bytes = 1,000,000 which is uh, far more ram than we have.
+    ; If we do it with bits thats 125,000 bytes which is technically within
+    ; the amount of ram of the calculator but not really so we need to do
+    ; something more clever.
+    ;
+    ; A much better option then is to do a mathematical line intersection test
+    ;
+    ;
+
+    ; So first we need to copy all the lines to C000h, excluding diagonals
+    line_buf = C000h
+
+    ld ix,VENTS
+    ld iy,line_buf
+    ld bc,(VENTS_END - VENTS) / 8
+    _copyAxisAlignedLines:
+        call isLineAxisAligned
+        ld de,8 ; for incerementing pointers
+        jr nz,{+}
+            .for _byte,0,7
+                ld a,(ix + _byte)
+                ld (iy + _byte),a
+            .loop
+            add iy,de
+        +:
+        add ix,de
+        dec bc \ ld a,b \ or c \ jr nz, _copyAxisAlignedLines
+
+    ; How many vents do we have remaining?
+    push iy
+    pop hl
+    ld de,line_buf
+    or a
+    sbc hl,de
+    ; div 8
+    srl h
+    rr l
+    srl h
+    rr l
+    srl h
+    rr l
+    ld b,h
+    ld c,l
+
+    push bc
+    ; reorder the lines
+    ld ix,line_buf
+    -:
+        call reOrderLine
+        ld de,8
+        add ix,de
+        dec bc \ ld a,b \ or c \ jr nz,{-}
+    pop bc
+
+    .var 4, num_intersections
+    ld hl,0
+    ld (num_intersections),hl
+    ld (num_intersections + 2),hl
+    ; Cool, now we need to intersect every line with every other line. Count the intersections
+    ; instersect l0 with l1-end
+    ; instersect l1 with l2-end
+    ; instersect l2 with l3-end
+    ld ix,line_buf
+    ld iy,line_buf + 8
+    dec bc ; we do n-1 tests
+    -:
+        push ix
+        push iy
+        push bc
+        --:
+            call axisAlignedIntersectTest
+            jr c,{+}
+                ; no-carry = instersect
+                ld hl,(num_intersections)
+                inc hl
+                ld (num_intersections),hl
+            +:
+            ld de,8
+            add iy,de
+            dec bc \ ld a,b \ or c \ jr nz,{--}
+        pop bc
+        pop iy
+        pop ix
+        ld de,8
+        add ix,de
+        add iy,de
+        dec bc \ ld a,b \ or c \ jr nz,{-}
+            
+    ; restore the world
+    ld a,00h
+    out (05h),a
+    ld a,0
+    out (20h),a
+    pop iy
+    ei
+
+    ld hl,num_intersections
+    call ConvertToBCD
+    ld a,0
+    ld (curRow),a
+    ld (curCol),a
+    ld hl,bcdRam
+    call DispBCD
+
+
+    b_call(_GetKey)
+
+    ret
+
+
+
+; Test if line at (ix) is axis-aligned
+; either x1 == x2 o y1 == y2
+; input: ix = line
+; destroy: hl,de
+; output: Z = true
+isLineAxisAligned:
+    ; X axis
+    ld l,(ix + lx1 + 0)
+    ld h,(ix + lx1 + 1)
+    ld e,(ix + lx2 + 0)
+    ld d,(ix + lx2 + 1)
+
+    or a
+    sbc hl,de
+    ret z
+
+    ld l,(ix + ly1 + 0)
+    ld h,(ix + ly1 + 1)
+    ld e,(ix + ly2 + 0)
+    ld d,(ix + ly2 + 1)
+
+    or a
+    sbc hl,de
+    ret
+
+; If a line does not go from lo to hi coordinate, swap order
+; input:
+; ix = line
+; destroy:
+; hl,de
+reOrderLine:
+    ; X axis
+    ld l,(ix + lx1 + 0)
+    ld h,(ix + lx1 + 1)
+    ld e,(ix + lx2 + 0)
+    ld d,(ix + lx2 + 1)
+    
+    or a
+    sbc hl,de
+    jr c,{+}
+        ; no carry means left >= right so we need to swap
+        ; undo subtract
+        add hl,de
+        ld (ix + lx2 + 0),l
+        ld (ix + lx2 + 1),h
+        ld (ix + lx1 + 0),e
+        ld (ix + lx1 + 1),d
+    +:
+
+    ; Y axis
+    ld l,(ix + ly1 + 0)
+    ld h,(ix + ly1 + 1)
+    ld e,(ix + ly2 + 0)
+    ld d,(ix + ly2 + 1)
+    
+    or a
+    sbc hl,de
+    jr c,{+}
+        ; no carry means lo >= hi so we need to swap
+        ; undo subtract
+        add hl,de
+        ld (ix + ly2 + 0),l
+        ld (ix + ly2 + 1),h
+        ld (ix + ly1 + 0),e
+        ld (ix + ly1 + 1),d
+    +:
+    ret
+    
+    
+
+; Given two lines a nd b, if 
+;
+;            | xb1,yb1
+; xa1,ya1 ---+----- xa2,ya2
+;            |
+;            |
+;            | xb2,yb2
+;
+;
+; xb1 >= xa1 and <= xa2 
+    ; xb1 - xa1 >= 0
+    ; xa2 - xb1 >= 0
+; xb2 >= xa1 and <= xa2  redundant
+; ya1 >= yb1 and <= yb2
+    ; ya1 - yb1 >= 0
+    ; yb2 - ya1 >= 0
+; ya2 >= yb1 and <= yb2  redundant
+;
+; and then we can just swap the lines and do the check again and if either is true they intersect
+;
+; but this is only for axis aligned lines which is the only thing we are considering right now
+;
+; also this only works if the lines go from low coordinate to high coordinate so we need to re-order before doing this
+;
+;
+; input:
+;   ix = line a
+;   iy = line b
+; destroy:
+;   hl,de
+; output:
+;   carry = does not intersect
+;   no-carry = intersect
+; 
+axisAlignedIntersectTest:
+    ; Need to do the tests with ix,iy and ix,iy swapped
+
+    call _subTest
+    ret nc
+    push ix
+    push iy
+
+    push ix
+    push iy
+    pop ix
+    pop iy
+    call _subTest
+
+    pop iy
+    pop ix
+    ret
+
+
+    _subTest:
+        ; xb1 - xa1 >= 0
+        ld l,(iy + lx1 + 0)
+        ld h,(iy + lx1 + 1)
+        ld e,(ix + lx1 + 0)
+        ld d,(ix + lx1 + 1)
+        or a
+        sbc hl,de
+        ret c
+
+        ; xa2 - xb1 >= 0
+        ld l,(ix + lx2 + 0)
+        ld h,(ix + lx2 + 1)
+        ld e,(iy + lx1 + 0)
+        ld d,(iy + lx1 + 1)
+        or a
+        sbc hl,de
+        ret c
+
+        ; ya1 - yb1 >= 0
+        ld l,(ix + ly1 + 0)
+        ld h,(ix + ly1 + 1)
+        ld e,(iy + ly1 + 0)
+        ld d,(iy + ly1 + 1)
+        or a
+        sbc hl,de
+        ret c
+
+        ; yb2 - ya1 >= 0
+        ld l,(iy + ly2 + 0)
+        ld h,(iy + ly2 + 1)
+        ld e,(ix + ly1 + 0)
+        ld d,(ix + ly1 + 1)
+        or a
+        sbc hl,de
+        ret
+
+; When a line intersects, we need to actually keep track of which points intersect
+; the fast way would be to use a binary tree but thats a pain for insertions so
+; im just gonna do a linear search
+insertPoints:
+    ; For every point in line A, if it intersects line B, then add it
+
+    ; First, is A horizontal or vertical
+    ; X axis
+    ld l,(ix + lx1 + 0)
+    ld h,(ix + lx1 + 1)
+    ld e,(ix + lx2 + 0)
+    ld d,(ix + lx2 + 1)
+
+    or a
+    sbc hl,de
+    jr z,_insertPointsVertical
+
+    ld l,(ix + ly1 + 0)
+    ld h,(ix + ly1 + 1)
+    ld e,(ix + ly2 + 0)
+    ld d,(ix + ly2 + 1)
+
+    or a
+    sbc hl,de
+    jr z,_insertPointsHorizontal
+
+    _insertPointsVertical:
+        ld l,(ix + ly2 + 0)
+        ld h,(ix + ly2 + 1)
+        ld e,(ix + ly1 + 0)
+        ld d,(ix + ly1 + 1)
+        or a
+        sbc hl,de
+        inc de
+        ld b,d
+        ld c,e
+        ; bc = number of points
+        ld l,(ix + ly1 + 0)
+        ld h,(ix + ly1 + 1)
+        ld e,(ix + lx1 + 0)
+        ld d,(ix + lx1 + 1)
+        -:
+            ; store de,hl somewhere TODO
+            inc hl
+            dec bc \ ld a,b \ or c \ jr nz,{-}
+        ret
+
+
+
+    _insertPointsHorizontal:
+        ld l,(ix + lx2 + 0)
+        ld h,(ix + lx2 + 1)
+        ld e,(ix + lx1 + 0)
+        ld d,(ix + lx1 + 1)
+        or a
+        sbc hl,de
+        inc de
+        ld b,d
+        ld c,e
+        ; bc = number of points
+        ld l,(ix + lx1 + 0)
+        ld h,(ix + lx1 + 1)
+        ld e,(ix + ly1 + 0)
+        ld d,(ix + ly1 + 1)
+        -:
+            ; store hl,de somewhere TODO
+            inc hl
+            dec bc \ ld a,b \ or c \ jr nz,{-}
+        ret
+
+    
+
+; bcd library
+.include "source/bcd.z80"
+
+
+; z80bits DE * BC
+; output DE:HL
+mult16by16:
+    ld hl,0
+
+	sla	e		; optimised 1st iteration
+	rl	d
+	jr	nc,$+4
+	ld	h,b
+	ld	l,c
+
+.repeat 15
+	add	hl,hl		; unroll 15 times
+	rl	e		; ...
+	rl	d		; ...
+	jr	nc,$+6		; ...
+	add	hl,bc		; ...
+	jr	nc,$+3		; ...
+	inc	de		; ...
+.loop
+    ret
+
+
+VENTS:
+; Converted from format x,y -> x,y
+.dw 510,771,510,322
+.dw 753,99,753,280
+.dw 160,330,33,330
+.dw 700,793,700,892
+.dw 327,168,327,690
+.dw 264,203,264,839
+.dw 135,134,314,134
+.dw 209,759,41,759
+.dw 474,514,491,531
+.dw 977,988,42,53
+.dw 924,245,278,891
+.dw 466,952,466,135
+.dw 381,560,822,119
+.dw 339,828,339,730
+.dw 114,775,114,508
+.dw 472,44,472,32
+.dw 815,512,188,512
+.dw 516,579,987,108
+.dw 219,386,219,838
+.dw 456,592,456,496
+.dw 778,300,355,300
+.dw 277,27,69,27
+.dw 889,217,307,799
+.dw 470,471,249,471
+.dw 655,867,20,232
+.dw 845,623,675,623
+.dw 278,281,278,47
+.dw 121,396,541,816
+.dw 61,965,978,48
+.dw 32,689,115,689
+.dw 654,162,654,947
+.dw 355,244,355,796
+.dw 272,805,705,372
+.dw 377,589,500,589
+.dw 505,625,163,625
+.dw 845,851,63,69
+.dw 411,734,411,942
+.dw 545,143,126,562
+.dw 265,799,734,330
+.dw 750,618,750,559
+.dw 987,25,628,25
+.dw 73,931,906,98
+.dw 652,433,652,954
+.dw 612,747,612,621
+.dw 448,915,195,915
+.dw 565,174,565,138
+.dw 218,235,576,593
+.dw 955,732,287,64
+.dw 225,112,969,112
+.dw 773,795,773,718
+.dw 446,150,446,490
+.dw 14,914,437,491
+.dw 950,987,46,83
+.dw 312,818,312,108
+.dw 42,791,165,791
+.dw 448,592,16,592
+.dw 225,389,245,389
+.dw 351,772,651,772
+.dw 531,685,485,731
+.dw 797,773,168,144
+.dw 247,196,28,196
+.dw 273,961,158,961
+.dw 961,877,961,691
+.dw 267,397,267,214
+.dw 553,140,26,667
+.dw 963,71,245,789
+.dw 878,128,749,128
+.dw 33,973,971,35
+.dw 950,152,733,152
+.dw 33,71,811,71
+.dw 757,556,792,556
+.dw 863,617,335,617
+.dw 763,781,11,29
+.dw 592,572,504,660
+.dw 498,899,498,867
+.dw 73,39,569,535
+.dw 179,242,179,734
+.dw 951,128,108,971
+.dw 86,535,758,535
+.dw 886,230,801,230
+.dw 28,39,749,760
+.dw 521,797,551,797
+.dw 870,641,329,100
+.dw 479,650,479,406
+.dw 373,791,923,791
+.dw 294,390,294,623
+.dw 905,759,905,622
+.dw 82,88,928,934
+.dw 171,15,171,560
+.dw 342,61,453,61
+.dw 30,103,777,850
+.dw 899,316,899,818
+.dw 746,493,417,164
+.dw 547,279,557,279
+.dw 330,663,330,882
+.dw 75,696,740,31
+.dw 368,828,912,284
+.dw 816,758,744,758
+.dw 484,753,922,753
+.dw 216,382,216,189
+.dw 835,563,835,827
+.dw 37,955,980,12
+.dw 730,704,836,704
+.dw 647,325,529,325
+.dw 627,647,978,296
+.dw 950,628,455,133
+.dw 349,382,915,382
+.dw 144,530,144,721
+.dw 675,736,675,646
+.dw 55,784,55,829
+.dw 63,724,309,970
+.dw 957,863,51,863
+.dw 86,732,86,959
+.dw 331,223,415,223
+.dw 65,906,65,362
+.dw 877,296,805,224
+.dw 360,85,93,85
+.dw 697,479,697,117
+.dw 965,55,49,971
+.dw 825,188,36,977
+.dw 107,522,129,522
+.dw 171,55,879,763
+.dw 23,615,748,615
+.dw 45,34,972,961
+.dw 241,750,241,251
+.dw 980,184,429,735
+.dw 859,419,859,695
+.dw 474,283,474,204
+.dw 135,100,616,100
+.dw 338,653,450,653
+.dw 304,294,304,285
+.dw 416,602,308,602
+.dw 517,172,978,633
+.dw 872,878,143,149
+.dw 487,314,394,314
+.dw 954,807,453,306
+.dw 701,933,701,655
+.dw 614,70,614,356
+.dw 246,744,61,559
+.dw 444,858,108,858
+.dw 981,954,110,83
+.dw 428,622,56,250
+.dw 813,747,383,317
+.dw 344,295,344,476
+.dw 870,36,870,638
+.dw 76,584,76,934
+.dw 931,802,931,486
+.dw 496,83,521,83
+.dw 341,319,700,678
+.dw 231,722,312,722
+.dw 967,966,103,102
+.dw 78,948,975,51
+.dw 167,146,817,796
+.dw 16,579,189,579
+.dw 68,242,686,860
+.dw 965,182,206,182
+.dw 226,565,226,30
+.dw 128,242,128,136
+.dw 75,395,75,644
+.dw 208,687,24,687
+.dw 46,867,46,765
+.dw 366,802,366,439
+.dw 410,657,698,945
+.dw 158,719,158,11
+.dw 357,462,647,462
+.dw 587,909,305,909
+.dw 927,694,235,694
+.dw 846,243,942,243
+.dw 781,169,30,169
+.dw 329,497,97,497
+.dw 139,120,963,944
+.dw 237,373,95,515
+.dw 512,316,890,316
+.dw 450,975,450,231
+.dw 906,326,554,326
+.dw 21,706,12,706
+.dw 698,384,448,634
+.dw 49,917,676,917
+.dw 790,752,790,36
+.dw 167,610,72,610
+.dw 571,347,313,347
+.dw 830,203,64,969
+.dw 842,731,490,731
+.dw 948,412,841,305
+.dw 259,110,319,110
+.dw 970,277,911,277
+.dw 619,424,326,424
+.dw 877,400,877,303
+.dw 437,612,854,195
+.dw 217,121,217,574
+.dw 734,109,734,235
+.dw 207,406,230,383
+.dw 111,914,981,44
+.dw 673,239,343,239
+.dw 567,258,522,258
+.dw 183,541,562,541
+.dw 834,143,834,545
+.dw 142,220,142,434
+.dw 739,942,312,515
+.dw 155,358,857,358
+.dw 610,709,466,709
+.dw 640,544,65,544
+.dw 211,14,88,14
+.dw 441,524,524,524
+.dw 278,322,259,322
+.dw 365,167,886,688
+.dw 706,971,706,60
+.dw 773,791,773,529
+.dw 833,752,532,451
+.dw 250,913,250,696
+.dw 660,50,360,350
+.dw 235,443,380,443
+.dw 853,56,369,540
+.dw 939,595,377,33
+.dw 935,957,740,957
+.dw 547,87,184,450
+.dw 53,955,974,34
+.dw 957,165,957,524
+.dw 392,956,392,166
+.dw 552,666,171,666
+.dw 949,728,103,728
+.dw 816,85,792,61
+.dw 968,108,103,973
+.dw 88,183,888,983
+.dw 804,788,66,788
+.dw 526,506,417,615
+.dw 822,670,634,482
+.dw 949,143,949,867
+.dw 302,820,302,877
+.dw 107,512,551,68
+.dw 23,123,23,101
+.dw 882,886,16,20
+.dw 216,977,216,522
+.dw 581,420,424,577
+.dw 84,41,113,41
+.dw 157,717,679,195
+.dw 907,270,907,259
+.dw 275,769,275,701
+.dw 389,88,44,433
+.dw 246,190,643,190
+.dw 212,730,235,707
+.dw 976,122,934,122
+.dw 860,179,860,797
+.dw 953,672,592,672
+.dw 680,101,680,714
+.dw 293,424,576,424
+.dw 139,107,55,23
+.dw 885,56,34,907
+.dw 87,74,911,898
+.dw 79,686,79,883
+.dw 936,139,936,937
+.dw 238,585,31,378
+.dw 742,120,883,120
+.dw 203,129,203,338
+.dw 571,665,421,515
+.dw 654,642,51,642
+.dw 797,313,797,850
+.dw 472,25,806,25
+.dw 956,21,13,964
+.dw 334,856,334,932
+.dw 199,904,165,870
+.dw 179,439,179,397
+.dw 657,805,319,467
+.dw 903,38,168,773
+.dw 672,487,326,833
+.dw 727,868,747,868
+.dw 467,637,984,637
+.dw 933,81,293,81
+.dw 786,211,690,115
+.dw 120,276,120,455
+.dw 101,86,975,960
+.dw 579,124,685,124
+.dw 679,346,679,986
+.dw 911,206,911,846
+.dw 401,497,401,375
+.dw 417,101,234,284
+.dw 61,885,315,885
+.dw 744,175,744,814
+.dw 97,496,539,938
+.dw 98,325,98,887
+.dw 14,277,709,972
+.dw 648,456,648,287
+.dw 16,13,988,985
+.dw 69,794,69,343
+.dw 753,148,272,629
+.dw 178,251,366,439
+.dw 431,241,431,32
+.dw 54,235,684,865
+.dw 964,68,91,941
+.dw 406,142,20,142
+.dw 373,490,373,88
+.dw 468,987,612,843
+.dw 981,31,127,885
+.dw 934,382,934,415
+.dw 936,881,936,56
+.dw 891,74,891,886
+.dw 490,346,490,769
+.dw 458,89,110,89
+.dw 754,171,236,689
+.dw 856,539,856,782
+.dw 312,498,312,370
+.dw 986,56,148,894
+.dw 591,777,591,613
+.dw 265,107,493,335
+.dw 916,775,916,193
+.dw 809,535,809,523
+.dw 584,231,61,754
+.dw 926,818,248,140
+.dw 764,443,324,443
+.dw 925,956,90,121
+.dw 536,378,715,557
+.dw 590,125,61,654
+.dw 108,630,535,203
+.dw 585,260,748,260
+.dw 243,86,672,86
+.dw 869,864,245,864
+.dw 332,188,332,709
+.dw 932,457,897,457
+.dw 713,247,460,500
+.dw 741,865,412,865
+.dw 927,742,927,96
+.dw 42,586,662,586
+.dw 577,431,577,273
+.dw 878,415,878,22
+.dw 433,913,742,604
+.dw 710,619,240,619
+.dw 761,317,133,317
+.dw 483,747,929,747
+.dw 83,513,700,513
+.dw 954,818,954,848
+.dw 22,12,620,610
+.dw 514,978,520,978
+.dw 638,582,133,582
+.dw 264,306,515,557
+.dw 416,662,971,662
+.dw 341,540,610,540
+.dw 847,837,294,284
+.dw 555,322,555,893
+.dw 965,981,12,28
+.dw 23,56,797,830
+.dw 712,285,712,856
+.dw 618,137,221,534
+.dw 268,286,268,732
+.dw 732,238,732,121
+.dw 125,452,987,452
+.dw 662,390,390,390
+.dw 485,651,485,922
+.dw 578,433,122,433
+.dw 471,904,471,176
+.dw 285,622,138,769
+.dw 270,889,270,912
+.dw 593,847,593,21
+.dw 749,350,857,350
+.dw 125,532,403,532
+.dw 357,73,807,73
+.dw 671,485,671,933
+.dw 216,501,624,501
+.dw 64,915,969,10
+.dw 801,246,801,870
+.dw 445,904,445,40
+.dw 300,525,540,525
+.dw 142,772,142,810
+.dw 914,711,217,711
+.dw 786,163,102,847
+.dw 715,615,715,169
+.dw 261,474,450,474
+.dw 726,434,726,559
+.dw 783,40,414,409
+.dw 673,171,393,171
+.dw 268,584,186,584
+.dw 189,562,480,562
+.dw 816,34,165,34
+.dw 645,443,645,118
+.dw 508,313,253,58
+.dw 550,164,206,508
+.dw 606,502,209,502
+.dw 345,696,232,809
+.dw 325,936,325,715
+.dw 505,479,537,479
+.dw 362,13,943,13
+.dw 169,507,375,507
+.dw 27,12,985,970
+.dw 980,768,98,768
+.dw 738,793,76,793
+.dw 877,935,886,935
+.dw 321,157,805,157
+.dw 800,595,171,595
+.dw 606,981,716,981
+.dw 57,31,57,158
+.dw 800,97,11,886
+.dw 455,164,455,476
+.dw 137,259,30,259
+.dw 111,495,482,124
+.dw 47,248,747,248
+.dw 299,268,225,268
+.dw 973,52,124,901
+.dw 498,821,498,653
+.dw 272,419,121,570
+.dw 394,48,703,48
+.dw 574,466,574,421
+.dw 918,256,361,256
+.dw 360,583,279,583
+.dw 164,611,406,611
+.dw 453,890,453,838
+.dw 433,562,25,154
+.dw 89,177,89,729
+.dw 138,910,138,674
+.dw 966,711,636,711
+.dw 139,830,139,760
+.dw 76,493,973,493
+.dw 228,910,878,260
+.dw 349,939,141,939
+.dw 742,624,742,472
+.dw 70,714,950,714
+.dw 377,935,621,691
+.dw 363,584,556,584
+.dw 452,517,452,544
+.dw 43,400,496,400
+.dw 608,926,740,794
+.dw 443,787,261,969
+.dw 670,703,326,703
+.dw 59,39,975,955
+.dw 748,96,721,96
+.dw 984,182,243,923
+.dw 780,342,780,801
+.dw 124,134,950,960
+.dw 555,979,777,979
+.dw 68,570,287,570
+.dw 399,977,613,977
+.dw 755,793,380,793
+.dw 88,167,88,132
+.dw 698,571,138,11
+.dw 631,227,842,227
+.dw 254,541,378,541
+.dw 636,238,594,238
+.dw 734,249,899,249
+.dw 524,520,680,520
+.dw 943,98,117,924
+.dw 53,37,121,37
+.dw 67,940,974,33
+.dw 962,157,139,980
+.dw 650,349,650,926
+.dw 77,111,569,111
+.dw 306,812,924,812
+.dw 362,579,756,579
+.dw 462,368,462,618
+.dw 267,803,80,803
+.dw 276,682,276,123
+.dw 599,96,42,96
+.dw 306,818,306,523
+.dw 729,254,82,901
+.dw 65,235,65,927
+.dw 573,774,237,774
+.dw 413,376,522,376
+.dw 103,52,81,52
+.dw 24,722,530,216
+.dw 341,395,467,395
+.dw 937,510,937,435
+.dw 292,385,518,385
+.dw 394,588,572,588
+.dw 561,20,275,20
+.dw 710,862,355,507
+.dw 104,530,916,530
+.dw 160,116,687,116
+.dw 22,952,940,34
+.dw 222,752,45,752
+.dw 873,784,873,475
+.dw 90,235,503,235
+.dw 655,543,580,543
+.dw 169,900,169,326
+.dw 969,724,634,389
+.dw 317,826,920,223
+.dw 705,71,705,970
+.dw 777,239,777,118
+.dw 614,746,614,635
+.dw 910,861,910,733
+.dw 12,23,972,983
+.dw 960,128,347,128
+.dw 821,612,503,294
+.dw 770,705,770,985
+.dw 382,977,726,977
+.dw 730,639,491,639
+.dw 706,333,492,547
+.dw 344,596,344,762
+.dw 729,599,729,630
+.dw 218,469,204,483
+.dw 630,586,630,686
+.dw 98,148,138,148
+.dw 939,110,433,616
+.dw 54,42,988,976
+.dw 987,948,83,44
+.dw 62,625,671,625
+.dw 165,64,950,849
+.dw 245,62,453,270
+.dw 695,244,60,244
+.dw 296,505,117,505
+.dw 522,692,741,692
+.dw 335,407,335,123
+.dw 717,37,600,37
+.dw 772,178,772,889
+VENTS_END:
