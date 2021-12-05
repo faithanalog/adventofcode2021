@@ -40,6 +40,9 @@ Main:
     ; Map bank 5 @ C000h
     ld a,05h
     out (05h),a
+    ; bank 6 @ 4000h
+    ld a,86h
+    out (06h),a
     ; 15MHz
     ld a,1
     out (20h),a
@@ -59,6 +62,23 @@ Main:
 
     ; So first we need to copy all the lines to C000h, excluding diagonals
     line_buf = C000h
+
+    marked_points = 4000h
+    xor a
+    ld hl,marked_points
+
+    ld b,0
+    ld c,$40
+    -:
+        --:
+            ld (hl),a
+            inc hl
+            djnz {--}
+        dec c
+        jr nz,{-}
+
+
+
 
     ld ix,VENTS
     ld iy,line_buf
@@ -120,10 +140,13 @@ Main:
         --:
             call axisAlignedIntersectTest
             jr c,{+}
-                ; no-carry = instersect
-                ld hl,(num_intersections)
-                inc hl
-                ld (num_intersections),hl
+                push hl
+                push de
+                push bc
+                call insertLine
+                pop bc
+                pop de
+                pop hl
             +:
             ld de,8
             add iy,de
@@ -135,10 +158,15 @@ Main:
         add ix,de
         add iy,de
         dec bc \ ld a,b \ or c \ jr nz,{-}
+
+    ; count inserted lines
+    ; TODO
             
     ; restore the world
     ld a,00h
     out (05h),a
+    pop af
+    out (06h),a
     ld a,0
     out (20h),a
     pop iy
@@ -322,7 +350,8 @@ axisAlignedIntersectTest:
 ; When a line intersects, we need to actually keep track of which points intersect
 ; the fast way would be to use a binary tree but thats a pain for insertions so
 ; im just gonna do a linear search
-insertPoints:
+; destroys hl,de,bc,a
+insertLine:
     ; For every point in line A, if it intersects line B, then add it
 
     ; First, is A horizontal or vertical
@@ -356,13 +385,18 @@ insertPoints:
         ld b,d
         ld c,e
         ; bc = number of points
-        ld l,(ix + ly1 + 0)
-        ld h,(ix + ly1 + 1)
-        ld e,(ix + lx1 + 0)
-        ld d,(ix + lx1 + 1)
+        ld l,(ix + lx1 + 0)
+        ld h,(ix + lx1 + 1)
+        ld e,(ix + ly1 + 0)
+        ld d,(ix + ly1 + 1)
         -:
-            ; store de,hl somewhere TODO
-            inc hl
+            ; store hl,de somewhere TODO
+            push hl
+            push de
+            call insertPoint
+            pop de
+            pop hl
+            inc de
             dec bc \ ld a,b \ or c \ jr nz,{-}
         ret
 
@@ -385,9 +419,75 @@ insertPoints:
         ld d,(ix + ly1 + 1)
         -:
             ; store hl,de somewhere TODO
+            push hl
+            push de
+            call insertPoint
+            pop de
+            pop hl
             inc hl
             dec bc \ ld a,b \ or c \ jr nz,{-}
         ret
+
+; Insert point HL,DE into the map of instersection points
+; destroys a, hl, de
+insertPoint:
+    ; We use the low 2 bits of HL and DE to index into the map, and then linear
+    ; search to either find the point already or insert it as the high 8 bits, plus a counter
+    ;
+    ; so 16 buckets of 1024 bytes (300ish entries) where a bucket is
+    ; 01LLEE00
+    xor a
+    rr d
+    rr e
+    rra
+    rr d
+    rr e
+    rra
+    rr h
+    rr l
+    rra
+    rr h
+    rr l
+    rra
+    rra
+    rra
+    or $04
+
+    ; move L to D, so X,Y is D,E
+    ld d,l
+    ld h,a
+    ld l,0
+
+    ; now linear search for a counter = 0
+    -:
+        ld a,(hl)
+        inc hl
+        cp d
+        jp nz,{+}
+            ld a,(hl)
+            cp e
+            jr nz,{+}
+                ; found, increment counter and return
+                inc hl
+                inc (hl)
+                ret
+        +:
+        inc hl
+        ld a,(hl)
+        inc hl
+        or a
+        jp nz,{-} ; not empty
+    ; at the spot
+    ; no safety for overflowing bucket
+    inc (hl) ; increment counter to one
+    dec hl
+    ld (hl),e
+    dec hl
+    ld (hl),d
+    ret
+
+    
+
 
     
 
