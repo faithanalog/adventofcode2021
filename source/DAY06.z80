@@ -1,0 +1,64 @@
+.nolist
+.global
+#include "ti83plus.inc"
+#include "dcs7.inc"
+.endglobal
+.variablename DAY06
+.list
+    .org progstart
+    .db $BB,$6D
+Init:
+    xor d
+    ret
+    jr Start
+    .dw Description
+    .db $07,$00
+    .dw $0000
+    .dw $0000
+Description:
+    .db "day 06",0
+
+.include "source/float.z80"
+.varloc saferam2, 500
+Start:
+
+; define offsets for line data
+lx1 = 0
+ly1 = 2
+lx2 = 4
+ly2 = 6
+
+; 96 * 64 bytes
+canvas = E000h
+
+Main:
+    ;bcall(_ClrScrnFull)
+
+
+
+
+    di
+    ; while we're at it, might as well use iy
+    push iy
+    ; Map bank 5 @ C000h
+    ld a,05h
+    out (05h),a
+    ; 15MHz
+    ld a,1
+    out (20h),a
+
+
+
+                
+    ; restore the world
+    ld a,00h
+    out (05h),a
+    ld a,0
+    out (20h),a
+    pop iy
+    ei
+
+
+    b_call(_GetKey)
+
+    ret
