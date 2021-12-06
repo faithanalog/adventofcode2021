@@ -28,8 +28,11 @@ ly1 = 2
 lx2 = 4
 ly2 = 6
 
+; 96 * 64 bytes
+canvas = E000h
+
 Main:
-    bcall(_ClrScrnFull)
+    ;bcall(_ClrScrnFull)
 
 
 
@@ -40,12 +43,24 @@ Main:
     ; Map bank 5 @ C000h
     ld a,05h
     out (05h),a
-    ; bank 6 @ 4000h
-    ld a,86h
-    out (06h),a
     ; 15MHz
     ld a,1
     out (20h),a
+
+
+    call moveCanvasToScreen
+    ld hl,0
+    ld (canvas_x),hl
+    ld (canvas_y),hl
+    ld hl,0
+    ld de,0
+    call drawPoint
+    ld hl,95
+    ld de,63
+    call drawPoint
+    call moveCanvasToScreen
+    call fastCopy
+
 
     ; So we need to calculate line intersections. One way is to just
     ; draw the lines
@@ -62,22 +77,6 @@ Main:
 
     ; So first we need to copy all the lines to C000h, excluding diagonals
     line_buf = C000h
-
-    marked_points = 4000h
-    xor a
-    ld hl,marked_points
-
-    ld b,0
-    ld c,$40
-    -:
-        --:
-            ld (hl),a
-            inc hl
-            djnz {--}
-        dec c
-        jr nz,{-}
-
-
 
 
     ld ix,VENTS
@@ -112,7 +111,9 @@ Main:
     ld b,h
     ld c,l
 
-    push bc
+    .var 2, num_lines
+    ld (num_lines),bc
+
     ; reorder the lines
     ld ix,line_buf
     -:
@@ -120,53 +121,111 @@ Main:
         ld de,8
         add ix,de
         dec bc \ ld a,b \ or c \ jr nz,{-}
-    pop bc
+    
 
     .var 4, num_intersections
     ld hl,0
     ld (num_intersections),hl
     ld (num_intersections + 2),hl
-    ; Cool, now we need to intersect every line with every other line. Count the intersections
-    ; instersect l0 with l1-end
-    ; instersect l1 with l2-end
-    ; instersect l2 with l3-end
-    ld ix,line_buf
-    ld iy,line_buf + 8
-    dec bc ; we do n-1 tests
+
+    
+    .var 1,counter_x
+    .var 1,counter_y
+    ld a,1200 / 64
+    ld (counter_y),a
+    ld hl,0
+    ld (canvas_y),hl
     -:
-        push ix
-        push iy
-        push bc
+        ld a,1200 / 96
+        ld (counter_x),a
+        ld hl,0
+        ld (canvas_x),hl
         --:
-            call axisAlignedIntersectTest
-            jr c,{+}
-                push hl
-                push de
+            ld ix,line_buf
+            ld bc,(num_lines)
+            ---:
                 push bc
                 call insertLine
                 pop bc
-                pop de
-                pop hl
-            +:
-            ld de,8
-            add iy,de
-            dec bc \ ld a,b \ or c \ jr nz,{--}
-        pop bc
-        pop iy
-        pop ix
-        ld de,8
-        add ix,de
-        add iy,de
-        dec bc \ ld a,b \ or c \ jr nz,{-}
+                ld de,8
+                add ix,de
+                dec bc \ ld a,b \ or c \ jr nz,{---}
 
-    ; count inserted lines
-    ; TODO
+            ; count the overlapping lines
+            ld hl,canvas
+            ld de,0
+            ld c,(96 * 64) / 256
+            ld a,1 ; only count overlaps of at least 2
+            ---:
+                ----:
+                    cp (hl)
+                    jp nc,{+}
+                        inc de
+                    +:
+                    inc hl
+                    djnz {----}
+                dec c
+                jr nz,{---}
+
+            ld hl,(num_intersections)
+            add hl,de
+            ld (num_intersections),hl
+            ld hl,(num_intersections + 2)
+            ld de,0
+            adc hl,de
+            ld (num_intersections + 2),hl
+
+            ; display the screen and clear it
+            call moveCanvasToScreen
+
+            ld a,2
+            ld (pencol),a
+            ld (penrow),a
+            ld hl,(canvas_x)
+            call DispHL
+
+            ld a,','
+            ld e,0
+            call DPutMap
+            ld a,' '
+            ld e,0
+            call DPutMap
+
+            ld hl,(canvas_y)
+            call DispHL
             
+            ld a,2
+            ld (pencol),a
+            ld a,7
+            ld (penrow),a
+            ld hl,(num_intersections)
+            call DispHL
+
+            call fastCopy
+
+            ld hl,(canvas_x)
+            ld de,96
+            add hl,de
+            ld (canvas_x),hl
+            ld a,(counter_x)
+            dec a
+            ld (counter_x),a
+            jp nz,{--}
+        ld hl,(canvas_y)
+        ld de,64
+        add hl,de
+        ld (canvas_y),hl
+        ld a,(counter_y)
+        dec a
+        ld (counter_y),a
+        jp nz,{-}
+
+
+
+                
     ; restore the world
     ld a,00h
     out (05h),a
-    pop af
-    out (06h),a
     ld a,0
     out (20h),a
     pop iy
@@ -381,9 +440,9 @@ insertLine:
         ld d,(ix + ly1 + 1)
         or a
         sbc hl,de
-        inc de
-        ld b,d
-        ld c,e
+        inc hl
+        ld b,h
+        ld c,l
         ; bc = number of points
         ld l,(ix + lx1 + 0)
         ld h,(ix + lx1 + 1)
@@ -393,7 +452,9 @@ insertLine:
             ; store hl,de somewhere TODO
             push hl
             push de
-            call insertPoint
+            push bc
+            call drawPoint
+            pop bc
             pop de
             pop hl
             inc de
@@ -409,9 +470,9 @@ insertLine:
         ld d,(ix + lx1 + 1)
         or a
         sbc hl,de
-        inc de
-        ld b,d
-        ld c,e
+        inc hl
+        ld b,h
+        ld c,l
         ; bc = number of points
         ld l,(ix + lx1 + 0)
         ld h,(ix + lx1 + 1)
@@ -421,7 +482,9 @@ insertLine:
             ; store hl,de somewhere TODO
             push hl
             push de
-            call insertPoint
+            push bc
+            call drawPoint
+            pop bc
             pop de
             pop hl
             inc hl
@@ -445,19 +508,26 @@ insertPoint:
     xor a
     rr d
     rr e
-    rra
+    rla
+    rr h
+    rr l
+    rla
+    or $04
+
+    ; A is ram page 4/5/6/7
+    or $80
+    out (06h),a
+
+    xor a
     rr d
     rr e
     rra
     rr h
     rr l
     rra
-    rr h
-    rr l
     rra
     rra
-    rra
-    or $04
+    or $40
 
     ; move L to D, so X,Y is D,E
     ld d,l
@@ -487,8 +557,158 @@ insertPoint:
     ld (hl),d
     ret
 
+; copy canvas to screen
+moveCanvasToScreen
+    ld hl,canvas
+    ld de,plotSScreen
+    ld b,0
+    .repeat 3
+    -:
+        ld c,0
+        ld a,1
+        .repeat 8
+            cp (hl)
+            rl c
+            ld (hl),0
+            inc hl
+        .loop
+        ld a,c
+        ld (de),a
+        inc de
+        djnz {-}
+    .loop
+    ret
+
+;-----> Copy the gbuf to the screen (fast)
+;Input: nothing
+;Output: graph buffer is copied to the screen
+fastCopy:
+ ld a,$80
+ out ($10),a
+ ld hl,plotSScreen-12-(-(12*64)+1)
+ ld a,$20
+ ld c,a
+ inc hl
+ dec hl
+fastCopyAgain:
+ ld b,64
+ inc c
+ ld de,-(12*64)+1
+ out ($10),a
+ add hl,de
+ ld de,10
+fastCopyLoop:
+ add hl,de
+ inc hl
+ inc hl
+ inc de
+ ld a,(hl)
+ out ($11),a
+ dec de
+ djnz fastCopyLoop
+ ld a,c
+ cp $2B+1
+ jr nz,fastCopyAgain
+ ret
+
+; drawLine
+; Inputs:
+; hl = point x
+; de = point y
+; destroys hl,de,bc,a
+; 
+; draw a point at vent_canvas, with a window of 96 x 64
+; clips to x >= hl, y >= de and x < hl + 96, y < de + 64
+; only horizontal/vertical lines and they must be ordered correctly
+.var 2, canvas_x
+.var 2, canvas_y
+drawPoint:
+    ; transform x coordinate
+    ld bc,(canvas_x)
+    or a
+    sbc hl,bc
+
+    ; clip x coordinate
+    ; carry = off the left side of canvas, ret
+    ret c
+    ; right-clip, first is h > 0
+    xor a
+    or h
+    ret nz
+    ; next, is h > canvas width - 1
+    ld a,96 - 1
+    sub l
+    ret c
+
+    ex de,hl ; x coordinate in de, y in hl
+
+    ; transform y coordinate
+    ld bc,(canvas_y)
+    or a
+    sbc hl,bc
+
+    ; clip y coordinate
+    ; carry = off the top side of canvas, ret
+    ret c
+    ; bottom-clip, first is h > 0
+    xor a
+    or h
+    ret nz
+    ; next, is h > canvas height - 1
+    ld a,64 - 1
+    sub l
+    ret c
+
+    ; draw point
+    ; y * 96 + x
+
+    ; y coordinate in l, x in e.
+    
+    ; hl = hl * 32 (2^5)
+    .repeat 5
+        add hl,hl
+    .loop
+
+    ; 32 + 32 + 32
+    ld b,h
+    ld c,l
+    add hl,hl
+    add hl,bc
+
+    ; add x coordinate
+    add hl,de
+
+    ; canvas
+    ld de,canvas
+    add hl,de
+
+    ; increment intersection
+    inc (hl)
+    ret
+
     
 
+DispHL:
+	ld	bc,-10000
+	call	Num1
+	ld	bc,-1000
+	call	Num1
+	ld	bc,-100
+	call	Num1
+	ld	bc,-10
+	call	Num1
+	ld	bc,-1
+Num1:	ld	a,'0'-1
+Num2:	inc	a
+	add	hl,bc
+	jr	c,Num2
+	sbc	hl,bc
+
+    push hl
+    ld e,0
+	call DPutMap
+    pop hl
+	ret 
 
     
 
