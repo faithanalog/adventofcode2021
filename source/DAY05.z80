@@ -356,14 +356,11 @@ reOrderLine:
 
 ; draws line ix on canvas
 drawLine:
-    .var 2, lineEndX
-    .var 2, lineEndY
-    .var 2, lineIncX
-    .var 2, lineIncY
+    
 
     ld l,(ix + lx2 + 0)
     ld h,(ix + lx2 + 1)
-    ld (lineEndX),hl
+    ld (_doLineEndTestX + 1),hl
 
     ld e,(ix + lx1 + 0)
     ld d,(ix + lx1 + 1)
@@ -373,37 +370,34 @@ drawLine:
     or a
     sbc hl,de
 
-    ld bc,0
-    jr z,{+} ; no inc
-    ld bc,-1
-    jr c,{+} ; negative inc
-    ld bc,1  ; positive inc
+    ld a,00000000b ; nop
+    jr z,{+}       ; no inc
+    ld a,00101011b ; dec hl
+    jr c,{+}       ; negative inc
+    ld a,00100011b ; inc hl
     +:
-    ld (lineIncX),bc
+    ld (_doLineIncX),a
 
 
     ld l,(ix + ly2 + 0)
     ld h,(ix + ly2 + 1)
-    ld (lineEndY),hl
+    ld (_doLineEndTestY + 1),hl
 
     ld e,(ix + ly1 + 0)
     ld d,(ix + ly1 + 1)
-    ; save y1
-    push de
+    ; de = y1
 
     or a
     sbc hl,de
-    ; y inc in c
-    ld bc,0
-    jr z,{+} ; no inc
-    ld bc,-1
-    jr c,{+} ; negative inc
-    ld bc,1   ; positive inc
-    +:
-    ld (lineIncY),bc
 
-    ; restore y1
-    pop de
+    ld a,00000000b ; nop
+    jr z,{+}       ; no inc
+    ld a,00011011b ; dec de
+    jr c,{+}       ; negative inc
+    ld a,00010011b ; inc de
+    +:
+    ld (_doLineIncY),a
+
     ; restore x1
     pop hl
 
@@ -415,30 +409,36 @@ drawLine:
         pop de    ; cur y
 
         xor a ; a will track if both points are at end
-        ld hl,(lineEndY)
+
+        _doLineEndTestY:
+        ld hl,0000h ; constant replaced by smc
+
         sbc hl,de
         or h
         or l
 
         pop bc    ; cur x
-        ld hl,(lineEndX)
+
+        _doLineEndTestX:
+        ld hl,0000h ; constant replaced by smc
+
         sbc hl,bc
         or h
         or l
         ; now if a is zero, end
         ret z
 
-        ; apply increments
+        ; restore = cur x
         ld h,b
         ld l,c
-        ld bc,(lineIncX)
-        add hl,bc
 
-        ex de,hl
-        ld bc,(lineIncY)
-        add hl,bc
-        ex de,hl
-        jr {-}
+        _doLineIncX:
+        nop ; dummy code, replaced by smc
+
+        _doLineIncY:
+        nop ; dummy code, replaced by smc
+
+        jp {-}
 
 
 ; copy canvas to screen
@@ -449,7 +449,7 @@ moveCanvasToScreen
     .repeat 3
     -:
         ld c,0
-        ld a,1
+        ld a,0 ; set to 1 to only show intersections
         .repeat 8
             cp (hl)
             rl c
