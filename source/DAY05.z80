@@ -19,7 +19,7 @@ Description:
     .db "day 05",0
 
 .include "source/float.z80"
-.varloc saferam1, 768
+.varloc saferam2, 500
 Start:
 
 ; define offsets for line data
@@ -79,6 +79,66 @@ Main:
     line_buf = C000h
 
 
+
+    .var 4, part1result
+    .var 4, part2result
+
+    call countIntersectionsAxisAligned
+    ld hl,num_intersections
+    ld de,part1result
+    ld bc,4
+    ldir
+
+    call countIntersectionsAll
+    ld hl,num_intersections
+    ld de,part2result
+    ld bc,4
+    ldir
+
+
+                
+    ; restore the world
+    ld a,00h
+    out (05h),a
+    ld a,0
+    out (20h),a
+    pop iy
+    ei
+
+    ld hl,part1result
+    call ConvertToBCD
+    ld a,0
+    ld (curRow),a
+    ld (curCol),a
+    ld hl,bcdRam
+    call DispBCD
+
+    ld hl,part2result
+    call ConvertToBCD
+    ld a,2
+    ld (curRow),a
+    ld a,0
+    ld (curCol),a
+    ld hl,bcdRam
+    call DispBCD
+
+
+    b_call(_GetKey)
+
+    ret
+
+
+countIntersectionsAll:
+    ld hl,VENTS
+    ld de,line_buf
+    ld bc,VENTS_END - VENTS
+    ldir
+
+    ld bc,(VENTS_END - VENTS) / 8
+    ld (num_lines),bc
+    jp countIntersectionsMain
+
+countIntersectionsAxisAligned:
     ld ix,VENTS
     ld iy,line_buf
     ld bc,(VENTS_END - VENTS) / 8
@@ -111,19 +171,14 @@ Main:
     ld b,h
     ld c,l
 
-    .var 2, num_lines
     ld (num_lines),bc
+    jp countIntersectionsMain
 
-    ; reorder the lines
-    ld ix,line_buf
-    -:
-        call reOrderLine
-        ld de,8
-        add ix,de
-        dec bc \ ld a,b \ or c \ jr nz,{-}
-    
+.var 2, num_lines
+.var 4, num_intersections
+countIntersectionsMain:
+    call moveCanvasToScreen ; clear canvas
 
-    .var 4, num_intersections
     ld hl,0
     ld (num_intersections),hl
     ld (num_intersections + 2),hl
@@ -145,7 +200,7 @@ Main:
             ld bc,(num_lines)
             ---:
                 push bc
-                call insertLine
+                call drawLine
                 pop bc
                 ld de,8
                 add ix,de
@@ -196,7 +251,7 @@ Main:
             
             ld a,2
             ld (pencol),a
-            ld a,7
+            ld a,8
             ld (penrow),a
             ld hl,(num_intersections)
             call DispHL
@@ -219,31 +274,7 @@ Main:
         dec a
         ld (counter_y),a
         jp nz,{-}
-
-
-
-                
-    ; restore the world
-    ld a,00h
-    out (05h),a
-    ld a,0
-    out (20h),a
-    pop iy
-    ei
-
-    ld hl,num_intersections
-    call ConvertToBCD
-    ld a,0
-    ld (curRow),a
-    ld (curCol),a
-    ld hl,bcdRam
-    call DispBCD
-
-
-    b_call(_GetKey)
-
     ret
-
 
 
 ; Test if line at (ix) is axis-aligned
@@ -316,246 +347,99 @@ reOrderLine:
     
     
 
-; Given two lines a nd b, if 
+; draw a line
 ;
-;            | xb1,yb1
-; xa1,ya1 ---+----- xa2,ya2
-;            |
-;            |
-;            | xb2,yb2
-;
-;
-; xb1 >= xa1 and <= xa2 
-    ; xb1 - xa1 >= 0
-    ; xa2 - xb1 >= 0
-; xb2 >= xa1 and <= xa2  redundant
-; ya1 >= yb1 and <= yb2
-    ; ya1 - yb1 >= 0
-    ; yb2 - ya1 >= 0
-; ya2 >= yb1 and <= yb2  redundant
-;
-; and then we can just swap the lines and do the check again and if either is true they intersect
-;
-; but this is only for axis aligned lines which is the only thing we are considering right now
-;
-; also this only works if the lines go from low coordinate to high coordinate so we need to re-order before doing this
-;
-;
-; input:
-;   ix = line a
-;   iy = line b
-; destroy:
-;   hl,de
-; output:
-;   carry = does not intersect
-;   no-carry = intersect
-; 
-axisAlignedIntersectTest:
-    ; Need to do the tests with ix,iy and ix,iy swapped
+; xinc = sign(x2 - x1)
+; yinc = sign(y2 - y1)
+; while x != x2 and y != y2
+;   draw line
 
-    call _subTest
-    ret nc
-    push ix
-    push iy
+; draws line ix on canvas
+drawLine:
+    .var 2, lineEndX
+    .var 2, lineEndY
+    .var 2, lineIncX
+    .var 2, lineIncY
 
-    push ix
-    push iy
-    pop ix
-    pop iy
-    call _subTest
+    ld l,(ix + lx2 + 0)
+    ld h,(ix + lx2 + 1)
+    ld (lineEndX),hl
 
-    pop iy
-    pop ix
-    ret
-
-
-    _subTest:
-        ; xb1 - xa1 >= 0
-        ld l,(iy + lx1 + 0)
-        ld h,(iy + lx1 + 1)
-        ld e,(ix + lx1 + 0)
-        ld d,(ix + lx1 + 1)
-        or a
-        sbc hl,de
-        ret c
-
-        ; xa2 - xb1 >= 0
-        ld l,(ix + lx2 + 0)
-        ld h,(ix + lx2 + 1)
-        ld e,(iy + lx1 + 0)
-        ld d,(iy + lx1 + 1)
-        or a
-        sbc hl,de
-        ret c
-
-        ; ya1 - yb1 >= 0
-        ld l,(ix + ly1 + 0)
-        ld h,(ix + ly1 + 1)
-        ld e,(iy + ly1 + 0)
-        ld d,(iy + ly1 + 1)
-        or a
-        sbc hl,de
-        ret c
-
-        ; yb2 - ya1 >= 0
-        ld l,(iy + ly2 + 0)
-        ld h,(iy + ly2 + 1)
-        ld e,(ix + ly1 + 0)
-        ld d,(ix + ly1 + 1)
-        or a
-        sbc hl,de
-        ret
-
-; When a line intersects, we need to actually keep track of which points intersect
-; the fast way would be to use a binary tree but thats a pain for insertions so
-; im just gonna do a linear search
-; destroys hl,de,bc,a
-insertLine:
-    ; For every point in line A, if it intersects line B, then add it
-
-    ; First, is A horizontal or vertical
-    ; X axis
-    ld l,(ix + lx1 + 0)
-    ld h,(ix + lx1 + 1)
-    ld e,(ix + lx2 + 0)
-    ld d,(ix + lx2 + 1)
+    ld e,(ix + lx1 + 0)
+    ld d,(ix + lx1 + 1)
+    ; save x1
+    push de
 
     or a
     sbc hl,de
-    jr z,_insertPointsVertical
 
-    ld l,(ix + ly1 + 0)
-    ld h,(ix + ly1 + 1)
-    ld e,(ix + ly2 + 0)
-    ld d,(ix + ly2 + 1)
+    ld bc,0
+    jr z,{+} ; no inc
+    ld bc,-1
+    jr c,{+} ; negative inc
+    ld bc,1  ; positive inc
+    +:
+    ld (lineIncX),bc
+
+
+    ld l,(ix + ly2 + 0)
+    ld h,(ix + ly2 + 1)
+    ld (lineEndY),hl
+
+    ld e,(ix + ly1 + 0)
+    ld d,(ix + ly1 + 1)
+    ; save y1
+    push de
 
     or a
     sbc hl,de
-    jr z,_insertPointsHorizontal
+    ; y inc in c
+    ld bc,0
+    jr z,{+} ; no inc
+    ld bc,-1
+    jr c,{+} ; negative inc
+    ld bc,1   ; positive inc
+    +:
+    ld (lineIncY),bc
 
-    _insertPointsVertical:
-        ld l,(ix + ly2 + 0)
-        ld h,(ix + ly2 + 1)
-        ld e,(ix + ly1 + 0)
-        ld d,(ix + ly1 + 1)
-        or a
-        sbc hl,de
-        inc hl
-        ld b,h
-        ld c,l
-        ; bc = number of points
-        ld l,(ix + lx1 + 0)
-        ld h,(ix + lx1 + 1)
-        ld e,(ix + ly1 + 0)
-        ld d,(ix + ly1 + 1)
-        -:
-            ; store hl,de somewhere TODO
-            push hl
-            push de
-            push bc
-            call drawPoint
-            pop bc
-            pop de
-            pop hl
-            inc de
-            dec bc \ ld a,b \ or c \ jr nz,{-}
-        ret
+    ; restore y1
+    pop de
+    ; restore x1
+    pop hl
 
-
-
-    _insertPointsHorizontal:
-        ld l,(ix + lx2 + 0)
-        ld h,(ix + lx2 + 1)
-        ld e,(ix + lx1 + 0)
-        ld d,(ix + lx1 + 1)
-        or a
-        sbc hl,de
-        inc hl
-        ld b,h
-        ld c,l
-        ; bc = number of points
-        ld l,(ix + lx1 + 0)
-        ld h,(ix + lx1 + 1)
-        ld e,(ix + ly1 + 0)
-        ld d,(ix + ly1 + 1)
-        -:
-            ; store hl,de somewhere TODO
-            push hl
-            push de
-            push bc
-            call drawPoint
-            pop bc
-            pop de
-            pop hl
-            inc hl
-            dec bc \ ld a,b \ or c \ jr nz,{-}
-        ret
-
-; Insert point HL,DE into the map of instersection points
-; destroys a, hl, de
-insertPoint:
-    ; We use the low 2 bits of HL and DE to index into the map, and then linear
-    ; search to either find the point already or insert it as the high 8 bits, plus a counter
-    ;
-    ; could squeeze more space by using another bit for the bucket index and making the counter
-    ; be just one bit, but that complicates logic a lot
-    ;
-    ; so 16 buckets of 1024 bytes (300ish entries) where a bucket is
-    ; TODO i dont think thats enough oh gods we need to use multiple ram pages and index into those with some bits
-    ; if we use the top 4 ram pages then we can get 16 * 512 * 4 = 32768 entries
-    ; 01LLEE00
-
-    xor a
-    rr d
-    rr e
-    rla
-    rr h
-    rr l
-    rla
-    or $04
-
-    ; A is ram page 4/5/6/7
-    or $80
-    out (06h),a
-
-    xor a
-    rr d
-    rr e
-    rra
-    rr h
-    rr l
-    rra
-    rra
-    rra
-    or $40
-
-    ; move L to D, so X,Y is D,E
-    ld d,l
-    ld h,a
-    ld l,0
-
-    ; now linear search for an empty spot (0,0)
-    ; this is only safe because our data set doesnt include any values in the 0-3 range on either axis
+    
     -:
-        ld a,(hl)
-        inc hl
-        cp d
-        jp nz,{+}
-            ld a,(hl)
-            cp e
-            ret z
-        +:
-        or (hl)
-        inc hl
-        or a
-        jp nz,{-} ; not empty
-    ; at the spot
-    ; no safety for overflowing bucket
-    dec hl
-    ld (hl),e
-    dec hl
-    ld (hl),d
-    ret
+        push hl
+        push de
+        call drawPoint
+        pop de    ; cur y
+
+        xor a ; a will track if both points are at end
+        ld hl,(lineEndY)
+        sbc hl,de
+        or h
+        or l
+
+        pop bc    ; cur x
+        ld hl,(lineEndX)
+        sbc hl,bc
+        or h
+        or l
+        ; now if a is zero, end
+        ret z
+
+        ; apply increments
+        ld h,b
+        ld l,c
+        ld bc,(lineIncX)
+        add hl,bc
+
+        ex de,hl
+        ld bc,(lineIncY)
+        add hl,bc
+        ex de,hl
+        jr {-}
+
 
 ; copy canvas to screen
 moveCanvasToScreen
