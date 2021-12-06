@@ -47,7 +47,7 @@ Main:
     ld a,1
     out (20h),a
 
-
+    ; diagnostic
     call moveCanvasToScreen
     ld hl,0
     ld (canvas_x),hl
@@ -62,20 +62,6 @@ Main:
     call fastCopy
 
 
-    ; So we need to calculate line intersections. One way is to just
-    ; draw the lines
-    ;
-    ; Looks like all values are between 0-999.
-    ; 1000 x 1000 bytes = 1,000,000 which is uh, far more ram than we have.
-    ; If we do it with bits thats 125,000 bytes which is technically within
-    ; the amount of ram of the calculator but not really so we need to do
-    ; something more clever.
-    ;
-    ; A much better option then is to do a mathematical line intersection test
-    ;
-    ;
-
-    ; So first we need to copy all the lines to C000h, excluding diagonals
     line_buf = C000h
 
 
@@ -302,51 +288,6 @@ isLineAxisAligned:
     sbc hl,de
     ret
 
-; If a line does not go from lo to hi coordinate, swap order
-; input:
-; ix = line
-; destroy:
-; hl,de
-reOrderLine:
-    ; X axis
-    ld l,(ix + lx1 + 0)
-    ld h,(ix + lx1 + 1)
-    ld e,(ix + lx2 + 0)
-    ld d,(ix + lx2 + 1)
-    
-    or a
-    sbc hl,de
-    jr c,{+}
-        ; no carry means left >= right so we need to swap
-        ; undo subtract
-        add hl,de
-        ld (ix + lx2 + 0),l
-        ld (ix + lx2 + 1),h
-        ld (ix + lx1 + 0),e
-        ld (ix + lx1 + 1),d
-    +:
-
-    ; Y axis
-    ld l,(ix + ly1 + 0)
-    ld h,(ix + ly1 + 1)
-    ld e,(ix + ly2 + 0)
-    ld d,(ix + ly2 + 1)
-    
-    or a
-    sbc hl,de
-    jr c,{+}
-        ; no carry means lo >= hi so we need to swap
-        ; undo subtract
-        add hl,de
-        ld (ix + ly2 + 0),l
-        ld (ix + ly2 + 1),h
-        ld (ix + ly1 + 0),e
-        ld (ix + ly1 + 1),d
-    +:
-    ret
-    
-    
-
 ; draw a line
 ;
 ; xinc = sign(x2 - x1)
@@ -440,62 +381,6 @@ drawLine:
 
         jp {-}
 
-
-; copy canvas to screen
-moveCanvasToScreen
-    ld hl,canvas
-    ld de,plotSScreen
-    ld b,0
-    .repeat 3
-    -:
-        ld c,0
-        ld a,0 ; set to 1 to only show intersections
-        .repeat 8
-            cp (hl)
-            rl c
-            ld (hl),0
-            inc hl
-        .loop
-        ld a,c
-        ld (de),a
-        inc de
-        djnz {-}
-    .loop
-    ret
-
-;-----> Copy the gbuf to the screen (fast)
-;Input: nothing
-;Output: graph buffer is copied to the screen
-fastCopy:
- ld a,$80
- out ($10),a
- ld hl,plotSScreen-12-(-(12*64)+1)
- ld a,$20
- ld c,a
- inc hl
- dec hl
-fastCopyAgain:
- ld b,64
- inc c
- ld de,-(12*64)+1
- out ($10),a
- add hl,de
- ld de,10
-fastCopyLoop:
- add hl,de
- inc hl
- inc hl
- inc de
- ld a,(hl)
- out ($11),a
- dec de
- djnz fastCopyLoop
- ld a,c
- cp $2B+1
- jr nz,fastCopyAgain
- ret
-
-; drawLine
 ; Inputs:
 ; hl = point x
 ; de = point y
@@ -570,6 +455,61 @@ drawPoint:
     inc (hl)
     ret
 
+
+; copy canvas to screen
+moveCanvasToScreen
+    ld hl,canvas
+    ld de,plotSScreen
+    ld b,0
+    .repeat 3
+    -:
+        ld c,0
+        ld a,0 ; set to 1 to only show intersections
+        .repeat 8
+            cp (hl)
+            rl c
+            ld (hl),0
+            inc hl
+        .loop
+        ld a,c
+        ld (de),a
+        inc de
+        djnz {-}
+    .loop
+    ret
+
+;-----> Copy the gbuf to the screen (fast)
+;Input: nothing
+;Output: graph buffer is copied to the screen
+fastCopy:
+ ld a,$80
+ out ($10),a
+ ld hl,plotSScreen-12-(-(12*64)+1)
+ ld a,$20
+ ld c,a
+ inc hl
+ dec hl
+fastCopyAgain:
+ ld b,64
+ inc c
+ ld de,-(12*64)+1
+ out ($10),a
+ add hl,de
+ ld de,10
+fastCopyLoop:
+ add hl,de
+ inc hl
+ inc hl
+ inc de
+ ld a,(hl)
+ out ($11),a
+ dec de
+ djnz fastCopyLoop
+ ld a,c
+ cp $2B+1
+ jr nz,fastCopyAgain
+ ret
+
     
 
 DispHL:
@@ -599,28 +539,6 @@ Num2:	inc	a
 ; bcd library
 .include "source/bcd.z80"
 
-
-; z80bits DE * BC
-; output DE:HL
-mult16by16:
-    ld hl,0
-
-	sla	e		; optimised 1st iteration
-	rl	d
-	jr	nc,$+4
-	ld	h,b
-	ld	l,c
-
-.repeat 15
-	add	hl,hl		; unroll 15 times
-	rl	e		; ...
-	rl	d		; ...
-	jr	nc,$+6		; ...
-	add	hl,bc		; ...
-	jr	nc,$+3		; ...
-	inc	de		; ...
-.loop
-    ret
 
 
 VENTS:
