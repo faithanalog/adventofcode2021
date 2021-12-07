@@ -243,6 +243,7 @@ scoreBoard:
 
 
 ; bcd library
+.define BCD64BIT
 .include "source/bcd.z80"
 
 
