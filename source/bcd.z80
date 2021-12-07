@@ -2,12 +2,22 @@
 ;Converts a 32bit little-endian int at HL to little-endian BCD at bcdRam
 ;Convert to BCD with double dabble
 ;Handles up to a _NUM_DIGITS (12 = max digits on unsigned 32 bit int)
-_NUM_DIGITS = 12
-.var _NUM_DIGITS, bcdRam
-.var 4, bcdSource
+
+.ifdef BCD64BIT
+    _NUM_BYTES = 8
+    _NUM_DIGITS = 20
+    .var _NUM_DIGITS, bcdRam
+    .var 8, bcdSource
+    .echoln "using 64bit bcd mode"
+.else
+    _NUM_BYTES = 4
+    _NUM_DIGITS = 12
+    .var _NUM_DIGITS, bcdRam
+    .var 4, bcdSource
+.endif
 ConvertToBCD:
     ld de,bcdSource
-    ld bc,4
+    ld bc,_NUM_BYTES
     ldir
     ld ix,bcdSource
 
@@ -19,7 +29,7 @@ _zeroScratch:
     inc hl
     djnz _zeroScratch
 
-    ld b,32
+    ld b,_NUM_BYTES * 8
     _bcdConvLp:
         ;Do increment
         ld c,_NUM_DIGITS
@@ -35,9 +45,9 @@ _zeroScratch:
             jr nz,_bcdIncLp
 
         sla (ix)
-        rl (ix + 1)
-        rl (ix + 2)
-        rl (ix + 3)
+        .for _byte,1,_NUM_BYTES - 1
+            rl (ix + _byte)
+        .loop
 
         ld c,_NUM_DIGITS
         ld hl,bcdRam
