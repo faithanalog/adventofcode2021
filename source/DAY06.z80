@@ -22,17 +22,8 @@ Description:
 .varloc saferam2, 500
 Start:
 
-; define offsets for line data
-lx1 = 0
-ly1 = 2
-lx2 = 4
-ly2 = 6
-
-; 96 * 64 bytes
-canvas = E000h
-
 Main:
-    ;bcall(_ClrScrnFull)
+    bcall(_ClrScrnFull)
 
 
 
@@ -48,7 +39,55 @@ Main:
     out (20h),a
 
 
+    ; Part 1
+    ; so the way this day works is simple. we got a lot of fish. the fish
+    ; reproduce. how many fish we gonna get? we could do it mathematically,
+    ; but the iterative solution will work just fine. IF we dont track the
+    ; fish individually but instead track the _days_.
+    ;
+    ; We need 9 day buckets (0-8) of fish. at the end of each step (day), we
+    ; move each bucket to the bucket before it (8 to 7, 7 to 6, 6 to 5) etc.
+    ; then, bucket 0 gets moved to day 8 (new fish), but it ALSO gets added to
+    ; day 6 (old fish starting the cycle again).
+    ;
+    ; If you notice this is a ring buffer so we can just move the rw head along
+    ;
+    ; we'll need big-int math for this. luckily we only need additon and that's easy
+    ; We'll do 8-byte numbers which is overkill but makes the buckets nice and aligned
+    ; to a power of 2
+    bucket_size = 8
+    num_buckets = 9
+    bucket_mem_size = bucket_size * num_buckets
+    buckets = C000h
 
+
+    call initBuckets
+    ld b,80
+    call  stepBuckets
+
+    .var 8, part1sum
+    ld hl,0
+    ld (part1sum),hl
+    ld (part1sum + 2),hl
+    ld (part1sum + 4),hl
+    ld (part1sum + 6),hl
+
+    ld de,part1sum
+    call sumBuckets
+
+    call initBuckets
+    ld b,0 ; 256
+    call  stepBuckets
+
+    .var 8, part2sum
+    ld hl,0
+    ld (part2sum),hl
+    ld (part2sum + 2),hl
+    ld (part2sum + 4),hl
+    ld (part2sum + 6),hl
+
+    ld de,part2sum
+    call sumBuckets
                 
     ; restore the world
     ld a,00h
@@ -58,7 +97,144 @@ Main:
     pop iy
     ei
 
+    ld hl,part1sum
+    call ConvertToBCD
+    ld a,0
+    ld (curRow),a
+    ld (curCol),a
+    ld hl,bcdRam
+    call DispBCD
+
+    ld hl,part2sum
+    call ConvertToBCD
+    ld a,2
+    ld (curRow),a
+    ld a,0
+    ld (curCol),a
+    ld hl,bcdRam
+    call DispBCD
+
 
     b_call(_GetKey)
 
     ret
+
+
+; input: b - number of iterations
+stepBuckets:
+    ; c keeps track of bucket head offset
+    ld c,0
+    -:
+        ; add bucket 0 to bucket 7 (which immediately becomes 6)
+
+        ; bucket 0
+        ld h,buckets >> 8
+        ld l,c
+
+        ld a,7 * bucket_size
+        add a,c
+        ; wrap around if >= bucket_mem_size
+        cp bucket_mem_size
+        jr c,{+}
+            sub bucket_mem_size
+        +:
+
+        ; bucket 7
+        ld d,h
+        ld e,a
+
+        ; destroys a, hl, de
+        call add64bit
+        
+        ld a,8
+        add a,c
+        ; wrap around if >= bucket_mem_size
+        cp bucket_mem_size
+        jr c,{+}
+            sub bucket_mem_size ; wrap around
+        +:
+        ld c,a
+        djnz {-}
+
+    ret
+
+; sum all buckets into DE
+sumBuckets:
+    ld b,num_buckets
+    ld hl,buckets
+    -:
+        push de
+        call add64bit
+        inc hl ; add64bit only incs hl 7 times
+        pop de
+        djnz {-}
+    ret
+
+; initialize buckets from starting fish
+initBuckets:
+    ; set all buckets to 0
+    ld hl,buckets
+    xor a
+    ld b,bucket_mem_size
+    -:
+        ld (hl),a
+        inc hl
+        djnz {-}
+
+    ld hl,FISH
+    ld d,buckets >> 8
+    ld bc,FISH_END - FISH
+
+    -:
+
+        ld a,(hl)
+        inc hl
+        ; * 8 for index
+        add a,a
+        add a,a
+        add a,a
+        ld e,a ; index
+        
+        call inc64bit
+
+        dec bc \ ld a,b \ or c \ jr nz,{-}
+
+    ret
+
+
+
+; Add HL to DE (store in DE)
+add64bit:
+    ld a,(de)
+    add a,(hl)
+    ld (de),a
+    .repeat 7
+        inc hl
+        inc de
+        ld a,(de)
+        adc a,(hl)
+        ld (de),a
+    .loop
+    ret
+
+; inc DE
+inc64bit:
+    ld a,(de)
+    add a,1
+    ld (de),a
+    .repeat 7
+        inc de
+        ld a,(de)
+        adc a,0
+        ld (de),a
+    .loop
+    ret
+
+.define BCD64BIT
+.include "source/bcd.z80"
+
+FISH:
+;.db 3,4,3,1,2
+.db 4,1,1,4,1,1,1,1,1,1,1,1,3,4,1,1,1,3,1,3,1,1,1,1,1,1,1,1,1,3,1,3,1,1,1,5,1,2,1,1,5,3,4,2,1,1,4,1,1,5,1,1,5,5,1,1,5,2,1,4,1,2,1,4,5,4,1,1,1,1,3,1,1,1,4,3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,5,1,1,2,1,1,1,1,1,1,1,2,4,4,1,1,3,1,3,2,4,3,1,1,1,1,1,2,1,1,1,1,2,5,1,1,1,1,2,1,1,1,1,1,1,1,2,1,1,4,1,5,1,3,1,1,1,1,1,5,1,1,1,3,1,2,1,2,1,3,4,5,1,1,1,1,1,1,5,1,1,1,1,1,1,1,1,3,1,1,3,1,1,4,1,1,1,1,1,2,1,1,1,1,3,2,1,1,1,4,2,1,1,1,4,1,1,2,3,1,4,1,5,1,1,1,2,1,5,3,3,3,1,5,3,1,1,1,1,1,1,1,1,4,5,3,1,1,5,1,1,1,4,1,1,5,1,2,3,4,2,1,5,2,1,2,5,1,1,1,1,4,1,2,1,1,1,2,5,1,1,5,1,1,1,3,2,4,1,3,1,1,2,1,5,1,3,4,4,2,2,1,1,1,1,5,1,5,2
+FISH_END:
+
