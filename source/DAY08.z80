@@ -1,0 +1,231 @@
+.nolist
+.global
+#include "ti83plus.inc"
+#include "dcs7.inc"
+.endglobal
+.variablename DAY08
+.list
+    .org progstart
+    .db $BB,$6D
+Init:
+    xor d
+    ret
+    jr Start
+    .dw Description
+    .db $07,$00
+    .dw $0000
+    .dw $0000
+Description:
+    .db "day 08",0
+
+.include "source/float.z80"
+.varloc saferam2, 500
+Start:
+
+Main:
+    bcall(_ClrScrnFull)
+
+
+
+
+    di
+    ; while we're at it, might as well use iy
+    push iy
+    ; Map bank 5 @ C000h
+    ld a,05h
+    out (05h),a
+    ; 15MHz
+    ld a,1
+    out (20h),a
+
+    .ifdef DEBUG
+        NUM_LINES = 10
+    .else
+        NUM_LINES = 200
+    .endif
+
+    call decompress_input
+
+    ; count how many output words are len 4/2/3/7 in input data (rep 4/1/7/8)
+    ld hl,C000h
+
+    ; counter of 1/4/7/8
+    ld de,0
+
+    .var 1,lines_lp_counter
+    ld ix,lines_lp_counter
+    ld (ix),NUM_LINES
+    
+
+    -:
+        ld b,10
+        --:
+            ---:
+                ld a,(hl)
+                inc hl
+                or a
+                jp nz,{---}
+            djnz {--}
+
+        ld b,4
+        --:
+            ld c,$FF ; will wrap so we get actual len
+            ---:
+                inc c
+                ld a,(hl)
+                inc hl
+                or a
+                jp nz,{---}
+            ld a,c
+            cp 2
+            jp z,{+}
+            cp 4
+            jp z,{+}
+            cp 3
+            jp z,{+}
+            cp 7
+            jp nz,{++}
+            +:
+                inc de
+            ++:
+            djnz {--}
+
+
+        dec (ix)
+        jp nz,{-}
+
+    ; restore the world
+    ld a,00h
+    out (05h),a
+    ld a,0
+    out (20h),a
+    pop iy
+    ei
+
+    ex de,hl ; put DE into HL
+
+    xor a
+    ld (penCol),a
+    ld a,10
+    ld (penRow),a
+    call VDispHL
+
+
+    b_call(_GetKey)
+
+    ret
+
+;.define BCD64BIT
+.include "source/bcd.z80"
+
+
+; decompress the 3-bit per char input to C000h
+decompress_input:
+    ld de,INPUT
+    ld hl,C000h
+
+    ld bc,((INPUT_END - INPUT) / 3) + 1
+    -:
+        push bc
+        ; handle 24 bits per cycle
+        ld a,(de)
+        inc de
+        ld c,0
+        rla
+        rl c
+        rla
+        rl c
+        rla
+        rl c
+        ld (hl),c ; 5 bits remaining in a
+        ld c,0
+        inc hl
+        rla
+        rl c
+        rla
+        rl c
+        rla
+        rl c
+        ld (hl),c ; 2 bits remaining in a
+        ld c,0
+        inc hl
+        rla
+        rl c
+        rla 
+        rl c
+        ld a,(de)
+        inc de
+        rla
+        rl c
+        ld (hl),c ; 7 bits remaining in a
+        ld c,0
+        inc hl
+        rla
+        rl c
+        rla
+        rl c
+        rla
+        rl c
+        ld (hl),c
+        ld c,0
+        inc hl   ; 4 bits remaining in a
+        rla
+        rl c
+        rla
+        rl c
+        rla
+        rl c
+        ld (hl),c
+        ld c,0
+        inc hl   ; 1 bits remaining in a
+        rla
+        rl c
+        ld a,(de)
+        inc de
+        rla
+        rl c
+        rla
+        rl c
+        ld (hl),c
+        ld c,0
+        inc hl   ; 6 bits remaining in a
+        rla
+        rl c
+        rla
+        rl c
+        rla
+        rl c
+        ld (hl),c
+        ld c,0
+        inc hl   ; 3 bits remaining in a
+        rla
+        rl c
+        rla
+        rl c
+        rla
+        rl c
+        ld (hl),c
+        inc hl   ; 0 bits remaining in a
+
+        pop bc
+        dec bc
+        ld a,b
+        or c
+        jp nz,{-}
+    ret
+
+
+    
+
+
+; Compressed dataset, 3 bits per char, all separators merged to null byte
+INPUT:
+.ifdef DEBUG
+    .include source/DAY08-test-input.z80
+.else
+    .include source/DAY08-input.z80
+.endif
+INPUT_END:
+; just in case data isnt quite aligned
+.db 0,0,0
+
