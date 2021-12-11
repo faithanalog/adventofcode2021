@@ -1,0 +1,523 @@
+.nolist
+.global
+#include "ti83plus.inc"
+#include "dcs7.inc"
+.endglobal
+.variablename DAY10
+.list
+    .org progstart
+    .db $BB,$6D
+Init:
+    xor d
+    ret
+    jr Start
+    .dw Description
+    .db $07,$00
+    .dw $0000
+    .dw $0000
+Description:
+    .db "day 10",0
+
+.include "source/float.z80"
+.varloc saferam2, 500
+Start:
+
+Main:
+    bcall(_ClrScrnFull)
+
+
+
+
+    di
+    ; while we're at it, might as well use iy
+    push iy
+    ; Map bank 5 @ C000h
+    ld a,05h
+    out (05h),a
+    ; 15MHz
+    ld a,1
+    out (20h),a
+
+    ; move the stack pointer
+    .var 2, old_stack
+    ld (old_stack),sp
+    ld sp,saferam1 + 768
+
+
+    call decompress_input
+    call score_file_corruptions
+    call score_file_completions
+
+    ; restore the world
+    ld sp,(old_stack)
+    ld a,00h
+    out (05h),a
+    ld a,0
+    out (20h),a
+    pop iy
+    ei
+
+
+    ld hl,final_corruption_score
+    call ConvertToBCD
+    ld a,0
+    ld (curRow),a
+    ld (curCol),a
+    ld hl,bcdRam
+    call DispBCD
+
+    ld hl,final_completion_score
+    call ConvertToBCD
+    ld a,2
+    ld (curRow),a
+    ld a,0
+    ld (curCol),a
+    ld hl,bcdRam
+    call DispBCD
+
+    b_call(_GetKey)
+
+    ret
+
+.define BCD64BIT
+.include "source/bcd.z80"
+
+; line at DE
+; line length in b
+;
+; output a = error, c = stack height
+find_syntax_error:
+    .var 200, syntax_stack
+    ld hl,syntax_stack + 200
+    ld c,0
+    -:
+        ld a,(de)
+        inc de
+        
+        ; 0 = opening, 1 = closing
+        bit 0,a
+        jp z,{+}
+            ; closing
+            
+            ; mask out bit 0
+            and 110b
+
+            ; compare to stack
+            cp (hl)
+
+            ; if it was zero, match. pop stack. otherwise no match, return char in a
+            ret nz
+            inc hl ; pop stack
+            dec c
+            jp {++}
+        +:
+            ; opening
+
+            ; push stack
+            dec hl
+            ld (hl),a
+            inc c
+        ++:
+        djnz {-}
+
+    ; no errors, return a = $FF
+    ld a,$FF
+    ret
+
+; line at DE
+; line length at b
+; return score in HL
+; destroy DC,B,A
+score_corrupt_line:
+    call find_syntax_error
+
+    ; ) = 3 points
+    ld hl,3
+    cp 000b
+    ret z
+
+    ; ] = 57 points
+    ld hl,57
+    cp 010b
+    ret z
+    
+    ; } = 1197 points
+    ld hl,1197
+    cp 100b
+    ret z
+
+    ; > = 25137
+    ld hl,25137
+    cp 110b
+    ret z
+
+    ; otherwise no points
+    ld hl,0
+    ret
+
+; line at DE
+; line length at b
+; return score in line_completion_score
+.var 8, line_completion_score
+.var 8, line_completion_score_scratch
+score_completion_line:
+    ld hl,0
+    .for _offs,0,6,2
+        ld (line_completion_score + _offs),hl
+    .loop
+
+    call find_syntax_error
+    ; find_syntax_error leaves hl pointing to the symbol stack, and
+    ; c is the height, so we can just unwind it
+
+    cp $FF
+    ret nz ; if its not $FF it ended on an error
+
+    ld b,c   ; stack heightin b
+    push hl  ; store symbol stack
+    -:
+        ; store the 1x
+        .for _offs,0,6,2
+            ld hl,(line_completion_score + _offs)
+            ld (line_completion_score_scratch + _offs),hl
+        .loop
+        
+        ; *4
+        .repeat 2
+            ld hl,line_completion_score
+            sla (hl)
+            .repeat 7
+                inc hl
+                rl (hl)
+            .loop
+        .loop
+
+        ; add the 1x
+        or a
+        .for _offs,0,6,2
+            ld hl,(line_completion_score + _offs)
+            ld de,(line_completion_score_scratch + _offs)
+            adc hl,de
+            ld (line_completion_score + _offs),hl
+        .loop
+
+
+        ; pop symbol stack
+        pop hl
+        ld a,(hl)
+        inc hl
+        push hl
+        ; so the score is 1/2/3/4 for )]}>. we represent these as 0/1/2/3
+        ; shifted over one, and the bit for open/close. so to get the starting
+        ; score just shift right and then inc
+        srl a
+        inc a
+
+        ; add the score
+        ld hl,line_completion_score
+        add a,(hl)
+        ld (hl),a
+        .repeat 7
+            inc hl
+            ld a,0
+            adc a,(hl)
+            ld (hl),a
+        .loop
+        
+        dec b
+        jp nz,{-}
+    ; pop trailing symbol stack 
+    pop hl
+
+    ; indicate success
+    ld a,$FF
+
+    ret
+
+
+.var 8, final_corruption_score
+score_file_corruptions:
+    ld hl,0
+    .for _offs,0,6,2
+        ld (final_corruption_score + _offs),hl
+    .loop
+
+    ld de,C000h ; line data
+    ld ix,IN_LINE_LENS ; line lenth data
+
+    ld b,IN_LINE_LENS_END - IN_LINE_LENS
+
+    -:
+        push bc
+        push de
+        ld b,(ix)
+        call score_corrupt_line
+        
+        ; add hl to final score
+        ld de,final_corruption_score
+        ld a,(de)
+        add a,l
+        ld (de),a
+        inc de
+
+        ld a,(de)
+        adc a,h
+        ld (de),a
+        inc de
+
+        .repeat 6
+            ld a,(de)
+            adc a,0
+            ld (de),a
+            inc de
+        .loop
+
+
+        pop hl ; pop line data pointer into hl
+        ld d,0
+        ld e,(ix) ; line len again
+        add hl,de
+        ex de,hl ; de = new data pointer
+        pop bc
+        inc ix
+        djnz {-}
+    ret
+
+.var 8,final_completion_score
+score_file_completions:
+    ; line_
+    ld hl,0
+    .for _offs,0,6,2
+        ld (final_completion_score + _offs),hl
+    .loop
+
+    ld de,C000h ; line data
+    ld ix,IN_LINE_LENS ; line lenth data
+    ld iy,E800h ; place to store scores
+
+    ld b,IN_LINE_LENS_END - IN_LINE_LENS
+
+    .var 1,number_scores_inserted
+    xor a
+    ld (number_scores_inserted),a
+
+    -:
+        push bc
+        push de
+        ld b,(ix)
+        call score_completion_line
+        ; was it corrupt
+        cp $FF
+        jr nz,{+}
+            ; add to list of scores if it was not corrupt
+            .for _offs,0,7
+                ld a,(line_completion_score + _offs)
+                ld (iy + _offs),a
+            .loop
+            ld de,8
+            add iy,de
+            ld hl,number_scores_inserted
+            inc (hl)
+        +:
+
+        pop hl ; pop line data pointer into hl
+        ld d,0
+        ld e,(ix) ; line len again
+        add hl,de
+        ex de,hl ; de = new data pointer
+        pop bc
+        inc ix
+        djnz {-}
+
+    ; now we need to sort scores to find the median
+    ; insertion sort
+
+    ; void insertion_sort(int *a, int n) {
+    ld ix,E800h + 8h
+
+    ; for(size_t i = n - 1; i > 0; --i) {
+    ld a,(number_scores_inserted)
+    ld b,a
+    dec b
+    -:
+        ; int tmp = a[n - i];
+        .var 8, sort_tmp
+        .for _offs,0,7
+            ld a,(ix + _offs)
+            ld (sort_tmp + _offs),a
+        .loop
+        
+        ; size_t j = n - i;
+        push ix
+        pop iy
+        ld a,(number_scores_inserted)
+        sub b
+        ld c,a
+
+        ; while(j > 0 && tmp < a[j - 1]) {
+        --:
+            ; tmp < a[j - 1]
+
+            ; compare tmp to iy-1
+            ; tmp - a[j - 1]
+            or a
+            .for _offs,0,7
+                ld a,(sort_tmp + _offs)
+                sbc a,(iy + (_offs - 8))
+            .loop
+            ; if carry, is less than. otherwise break
+            jp nc,{+}
+            
+            ; a[j] = a[j - 1]
+            .for _offs,0,7
+                ld a,(iy + (_offs - 8))
+                ld (iy + _offs),a
+            .loop
+            
+            ; --j
+            ld de,-8
+            add iy,de
+            dec c
+            jr nz,{--}
+        +:
+
+        ; a[j] = tmp
+        .for _offs,0,7
+            ld a,(sort_tmp + _offs)
+            ld (iy + _offs),a
+        .loop
+        
+        ; a++
+        ld de,8
+        add ix,de
+        dec b
+        jp nz,{-}
+
+    ; now just take the median value 
+    ; (number_scores_inserted / 2) * 8 + E800h
+    ld a,(number_scores_inserted)
+    srl a
+    ld h,0
+    ld l,a
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    ld de,E800h
+    add hl,de
+    ld de,final_completion_score
+    ld bc,8
+    ldir
+
+    ret
+
+
+
+
+
+; decompress the 3-bit per char input to C000h
+decompress_input:
+    ld de,IN_PROG
+    ld hl,C000h
+
+    ld bc,((IN_PROG_END - IN_PROG) / 3) + 1
+    -:
+        push bc
+        ; handle 24 bits per cycle
+        ld a,(de)
+        inc de
+        ld c,0
+        rla
+        rl c
+        rla
+        rl c
+        rla
+        rl c
+        ld (hl),c ; 5 bits remaining in a
+        ld c,0
+        inc hl
+        rla
+        rl c
+        rla
+        rl c
+        rla
+        rl c
+        ld (hl),c ; 2 bits remaining in a
+        ld c,0
+        inc hl
+        rla
+        rl c
+        rla 
+        rl c
+        ld a,(de)
+        inc de
+        rla
+        rl c
+        ld (hl),c ; 7 bits remaining in a
+        ld c,0
+        inc hl
+        rla
+        rl c
+        rla
+        rl c
+        rla
+        rl c
+        ld (hl),c
+        ld c,0
+        inc hl   ; 4 bits remaining in a
+        rla
+        rl c
+        rla
+        rl c
+        rla
+        rl c
+        ld (hl),c
+        ld c,0
+        inc hl   ; 1 bits remaining in a
+        rla
+        rl c
+        ld a,(de)
+        inc de
+        rla
+        rl c
+        rla
+        rl c
+        ld (hl),c
+        ld c,0
+        inc hl   ; 6 bits remaining in a
+        rla
+        rl c
+        rla
+        rl c
+        rla
+        rl c
+        ld (hl),c
+        ld c,0
+        inc hl   ; 3 bits remaining in a
+        rla
+        rl c
+        rla
+        rl c
+        rla
+        rl c
+        ld (hl),c
+        inc hl   ; 0 bits remaining in a
+
+        pop bc
+        dec bc
+        ld a,b
+        or c
+        jp nz,{-}
+    ret
+
+
+    
+
+
+; Compressed dataset, 3 bits per char, all separators merged to null byte
+;.define DEBUG
+.ifdef DEBUG
+    .include source/DAY10-test-input.z80
+.else
+    .include source/DAY10-input.z80
+.endif
+
