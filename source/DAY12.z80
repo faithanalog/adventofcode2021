@@ -1,0 +1,319 @@
+.nolist
+.global
+#include "ti83plus.inc"
+#include "dcs7.inc"
+.endglobal
+.variablename DAY12
+.list
+    .org progstart
+    .db $BB,$6D
+Init:
+    xor d
+    ret
+    jr Start
+    .dw Description
+    .db $07,$00
+    .dw $0000
+    .dw $0000
+Description:
+    .db "day 12",0
+
+.include "source/float.z80"
+.varloc saferam2, 500
+Start:
+
+Main:
+    bcall(_ClrScrnFull)
+
+
+
+
+    di
+    ; while we're at it, might as well use iy
+    push iy
+    ; Map bank 5 @ C000h
+    ld a,05h
+    out (05h),a
+    ; 15MHz
+    ld a,1
+    out (20h),a
+
+    ; move the stack pointer
+    .var 2, old_stack
+    ld (old_stack),sp
+    ld sp,saferam1 + 768
+
+
+
+    ; restore the world
+    ld sp,(old_stack)
+    ld a,00h
+    out (05h),a
+    ld a,0
+    out (20h),a
+    pop iy
+    ei
+
+
+    ld hl,part1sum
+    call ConvertToBCD
+    ld a,0
+    ld (curRow),a
+    ld (curCol),a
+    ld hl,bcdRam
+    call DispBCD
+
+    ld hl,grid_sync_step
+    call ConvertToBCD
+    ld a,2
+    ld (curRow),a
+    ld a,0
+    ld (curCol),a
+    ld hl,bcdRam
+    call DispBCD
+
+    b_call(_GetKey)
+
+    ret
+
+;.define BCD64BIT
+.include "source/bcd.z80"
+
+; allocate a cave ID in the cave ID table or return existing id
+; return ID in c
+; IX = ptr to string
+; destroy a,iy,de,bc,hl
+; preserve ix
+.var (3 * 32), caveIDTable
+getCaveID:
+    ; First, check that it isnt start or end
+    ld a,'s'
+    cp (ix + 0)
+    jr nz,{+}
+    ld a,'t'
+    cp (ix + 1)
+    jr nz,{+}
+    ld a,'a'
+    cp (ix + 2)
+    jr nz,{+}
+    ld a,'r'
+    cp (ix + 3)
+    jr nz,{+}
+    ld a,'t'
+    cp (ix + 4)
+    jr nz,{+}
+    ld c,1
+    ret
+    +:
+
+    ld a,'e'
+    cp (ix + 0)
+    jr nz,{+}
+    ld a,'n'
+    cp (ix + 1)
+    jr nz,{+}
+    ld a,'d'
+    cp (ix + 2)
+    jr nz,{+}
+    ld c,2
+    ret
+    +:
+
+    ld iy,caveIDTable
+    ld e,(ix + 0)
+    ld d,(ix + 1)
+    
+    ; index into table
+    ; start at 3, 1 and 2 are reserved
+    ld c,3
+    -:
+        ; load table chars
+        ld l,(iy + 0)
+        ld h,(iy + 1)
+
+        ; if 0, hit an empty element, brk and alloc
+        ld a,h
+        or l
+        jr z,{++}
+
+        ; test against input str
+        or a
+        sbc hl,de
+        jr z,{+}
+
+        inc iy
+        inc iy
+        inc iy
+        inc c
+        jr {-}
+    +:
+        ; found id in table, return that
+        ret
+    ++:
+        ; allocate
+        ld (iy + 0),e
+        ld (iy + 1),d
+        ld (iy + 2),c
+        ret
+
+; get ptr to cave data, ID in e
+; caves are stored as 1 byte for upper/lower, then 15 bytes for connections
+caveData = C000h
+caveDataIdx:
+    ld hl,caveData
+
+    ld d,0
+    ; dont need many connections. like 256 = max of 16 caves all connected?
+    ; *= 16
+    or a
+    .repeat 4
+        rl e
+        rl d
+    .loop
+
+    add hl,de
+    ret
+    
+
+; insert a cave connection between two caves (adds to both)
+; b - cave 1
+; c - cave 2
+;
+insertConnection:
+    .for _cave, 1, 2
+        .if _cave == 1
+            ld e,b
+        .else
+            ld e,c
+        .endif
+        
+        call caveDataIdx
+        inc hl ; skip upper/lower flag
+
+        ; find a zero
+        -:
+            ld a,(hl)
+            or a
+            jr z,{+}
+            inc hl
+            jr {-}
+        +:
+
+        .if _cave == 1
+            ld (hl),c
+        .else
+            ld (hl),b
+        .endif
+    .loop
+    ret
+
+
+
+ readInput:
+    ; init cave data to 0
+    ld hl,caveData
+    ld b,0
+    xor a
+    -:
+        ld (hl),a
+        inc hl
+        djnz {-}
+
+    ld ix,CAVES
+
+    -:
+        ; is cave null, EOF
+        ld a (ix)
+        or a
+        jr z,{+}
+
+        call getCaveID
+        push bc
+
+        ; set cave size
+        ; lowercase = 5 bit set. upper = 5 bit reset
+        ld e,c
+        call caveDataIdx
+        ld a,20h
+        and (ix)
+        ld (hl),a
+
+        ; scan past -
+        --:
+            ld a,(ix)
+            inc ix
+            cp '-'
+            jr nz,{-}
+
+        call getCaveID
+
+        ; set cave size
+        ; lowercase = 5 bit set. upper = 5 bit reset
+        ld e,c
+        call caveDataIdx
+        ld a,20h
+        and (ix)
+        ld (hl),a
+
+        ; scan past null
+        --:
+            ld a,(ix)
+            inc ix
+            or a
+            jr nz,{-}
+
+        pop hl
+        ld b,l ; first cave ID in b
+               ; second cave ID already in c
+
+        call insertConnection
+        jr {-}
+    +:
+    ret
+
+; need a way to do the graphs now
+.var 16, visitTable
+part1:
+    ret
+
+
+
+CAVES:
+;.define DEBUG
+.ifdef DEBUG
+    .db "dc-end", 0
+    .db "HN-start", 0
+    .db "start-kj", 0
+    .db "dc-start", 0
+    .db "dc-HN", 0
+    .db "LN-dc", 0
+    .db "HN-end", 0
+    .db "kj-sa", 0
+    .db "kj-HN", 0
+    .db "kj-dc", 0
+.else
+    .db "GC-zi", 0
+    .db "end-zv", 0
+    .db "lk-ca", 0
+    .db "lk-zi", 0
+    .db "GC-ky", 0
+    .db "zi-ca", 0
+    .db "end-FU", 0
+    .db "iv-FU", 0
+    .db "lk-iv", 0
+    .db "lk-FU", 0
+    .db "GC-end", 0
+    .db "ca-zv", 0
+    .db "lk-GC", 0
+    .db "GC-zv", 0
+    .db "start-iv", 0
+    .db "zv-QQ", 0
+    .db "ca-GC", 0
+    .db "ca-FU", 0
+    .db "iv-ca", 0
+    .db "start-lk", 0
+    .db "zv-FU", 0
+    .db "start-zi", 0
+.endif
+.db 0
+CAVES_END:
