@@ -1,0 +1,286 @@
+.nolist
+.global
+#include "ti83plus.inc"
+#include "dcs7.inc"
+.endglobal
+.variablename DAY11
+.list
+    .org progstart
+    .db $BB,$6D
+Init:
+    xor d
+    ret
+    jr Start
+    .dw Description
+    .db $07,$00
+    .dw $0000
+    .dw $0000
+Description:
+    .db "day 11",0
+
+.include "source/float.z80"
+.varloc saferam2, 500
+Start:
+
+Main:
+    bcall(_ClrScrnFull)
+
+
+
+
+    di
+    ; while we're at it, might as well use iy
+    push iy
+    ; Map bank 5 @ C000h
+    ld a,05h
+    out (05h),a
+    ; 15MHz
+    ld a,1
+    out (20h),a
+
+    ; move the stack pointer
+    .var 2, old_stack
+    ld (old_stack),sp
+    ld sp,saferam1 + 768
+
+
+    octogrid = C000h
+
+    ld hl,0
+    ld (octoflash_count),hl
+    ld (octoflash_count + 2),hl
+    
+    call octoinit
+
+    ld b,100
+    -:
+        push bc
+        call octogridstep
+        pop bc
+        djnz {-}
+
+    ; save flash count
+    .var 4, part1sum
+    ld hl,octoflash_count
+    ld de,part1sum
+    ld bc,4
+    ldir
+
+    ; Find sync point
+    .var 4, grid_sync_step
+    ld hl,100
+    ld (grid_sync_step),hl
+    ld hl,0
+    ld (grid_sync_step + 2),hl
+
+    -:
+        ld hl,(grid_sync_step)
+        inc hl
+        ld (grid_sync_step),hl
+        call octogridstep
+        jr nz,{-}
+    
+
+    ; restore the world
+    ld sp,(old_stack)
+    ld a,00h
+    out (05h),a
+    ld a,0
+    out (20h),a
+    pop iy
+    ei
+
+
+    ld hl,part1sum
+    call ConvertToBCD
+    ld a,0
+    ld (curRow),a
+    ld (curCol),a
+    ld hl,bcdRam
+    call DispBCD
+
+    ld hl,grid_sync_step
+    call ConvertToBCD
+    ld a,2
+    ld (curRow),a
+    ld a,0
+    ld (curCol),a
+    ld hl,bcdRam
+    call DispBCD
+
+    b_call(_GetKey)
+
+    ret
+
+; Index of an octopus in the grid
+; H = x
+; L = y
+; OUTPUT: HL = addr
+; destroy DE
+octoindex:
+    .repeat 4
+        rr h
+        rl l
+    .loop
+    ld h,0
+    ld de,octogrid
+    add hl,de
+    ret
+
+
+    
+; Octopus flashes, powering up nearby octofriends
+; H = x
+; L = y
+.var 4, octoflash_count
+octoflash:
+    push hl
+    call octoindex
+    ld (hl),0
+
+    ld hl,(octoflash_count)
+    inc hl
+    ld (octoflash_count),hl
+    
+    .for _y,-1,1
+        .for _x,-1,1
+            pop hl
+            push hl
+            ld a,h
+            add a,_x
+            ; bound check
+            cp 10
+            jr nc,{+}
+            ld h,a
+
+            ld a,l
+            add a,_y
+            ; bound check
+            cp 10
+            jr nc,{+}
+            ld l,a
+
+            push hl
+            call octoindex
+            ld a,(hl)
+            or a
+            jr z,{++} ; dont power up lvl 0 octopus
+                inc a
+                ld (hl),a
+            ++:
+            pop hl
+            cp 10
+            call nc,octoflash
+            +:
+        .loop
+    .loop
+    
+    pop hl
+    ret
+    
+
+; Step da grid
+; return Z if grid is synchronized else NZ
+octogridstep:
+    ld c,10
+    -:
+        ld b,10
+        --:
+            ld h,b
+            dec h
+            ld l,c
+            dec l
+            call octoindex
+            inc (hl)
+            djnz {--}
+        dec c
+        jr nz,{-}
+
+    ld c,10
+    -:
+        ld b,10
+        --:
+            ld h,b
+            dec h
+            ld l,c
+            dec l
+            push hl
+            call octoindex
+            ld a,(hl)
+            pop hl
+            cp 10
+            call nc,octoflash
+            djnz {--}
+        dec c
+        jr nz,{-}
+
+    ; check for grid sync
+    xor a
+    ld c,10
+    -:
+        ld b,10
+        --:
+            ld h,b
+            dec h
+            ld l,c
+            dec l
+            call octoindex
+            or (hl)
+            ret nz
+            djnz {--}
+        dec c
+        jr nz,{-}
+
+    xor a
+    ret
+
+
+; init da grid
+octoinit:
+    ld ix,OCTO
+    ld c,10
+    -:
+        ld b,10
+        --:
+            ld h,b
+            dec h
+            ld l,c
+            dec l
+            call octoindex
+            ld a,(ix)
+            ld (hl),a
+            inc ix
+            djnz {--}
+        dec c
+        jr nz,{-}
+    ret
+
+;.define BCD64BIT
+.include "source/bcd.z80"
+
+OCTO:
+;.define DEBUG
+.ifdef DEBUG
+    .db 5,4,8,3,1,4,3,2,2,3
+    .db 2,7,4,5,8,5,4,7,1,1
+    .db 5,2,6,4,5,5,6,1,7,3
+    .db 6,1,4,1,3,3,6,1,4,6
+    .db 6,3,5,7,3,8,5,4,7,8
+    .db 4,1,6,7,5,2,4,6,4,5
+    .db 2,1,7,6,8,4,1,7,2,1
+    .db 6,8,8,2,8,8,1,1,3,4
+    .db 4,8,4,6,8,4,8,5,5,4
+    .db 5,2,8,3,7,5,1,5,2,6
+.else
+    .db 1,2,5,4,1,1,7,2,2,8
+    .db 4,4,1,6,8,7,3,2,2,4
+    .db 8,3,5,4,3,8,1,5,5,3
+    .db 1,3,7,2,6,3,7,6,1,4
+    .db 5,5,8,6,5,3,8,5,5,3
+    .db 7,2,1,3,3,3,3,4,2,7
+    .db 3,5,7,1,3,6,2,8,2,5
+    .db 1,6,8,1,1,2,6,2,4,3
+    .db 8,7,1,8,3,1,2,1,3,8
+    .db 5,2,5,4,2,6,6,3,4,7
+.endif
+OCTO_END:
