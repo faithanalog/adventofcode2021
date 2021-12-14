@@ -1,0 +1,1299 @@
+.nolist
+.global
+#include "ti83plus.inc"
+#include "dcs7.inc"
+.endglobal
+.variablename DAY13
+.list
+    .org progstart
+    .db $BB,$6D
+Init:
+    xor d
+    ret
+    jr Start
+    .dw Description
+    .db $07,$00
+    .dw $0000
+    .dw $0000
+Description:
+    .db "day 13",0
+
+.include "source/float.z80"
+.varloc saferam2, 500
+Start:
+
+Main:
+    bcall(_ClrScrnFull)
+
+
+
+
+    di
+    ; while we're at it, might as well use iy
+    push iy
+    ; Map bank 5 @ C000h
+    ld a,05h
+    out (05h),a
+    ; 15MHz
+    ld a,1
+    out (20h),a
+
+    ; move the stack pointer
+    .var 2, old_stack
+    ld (old_stack),sp
+    ld sp,saferam1 + 768
+
+
+    ; clear graph
+    ld hl,plotSScreen
+    xor a
+    ld b,0
+    -:
+        ld (hl),a \ inc hl
+        ld (hl),a \ inc hl
+        ld (hl),a \ inc hl
+        djnz {-}
+
+
+    POINTLIST = C000h
+
+    ld hl,INPUT
+    ld de,POINTLIST
+    ld bc,INPUT_END - INPUT
+    ldir
+
+
+    ; Do one fold
+    ld a,(FOLDS)
+    ld de,(FOLDS + 1)
+    call foldPointsOverAxis
+
+    ; Count points, store
+    call sortPoints
+    call countUniqueSortedPoints
+
+    .var 2,part1ans
+    ld (part1ans),hl
+
+    ; Do the rest of the folds
+    ld b,(FOLDS_END - FOLDS) / 3 - 1
+    ld hl,FOLDS + 3
+    -:
+        ld a,(hl) \ inc hl
+        ld e,(hl) \ inc hl
+        ld d,(hl) \ inc hl
+        push bc
+        push hl
+        call foldPointsOverAxis
+        pop hl
+        pop bc
+        djnz {-}
+
+    ; All folds should fit on screen now so we can just plot them
+    ld ix,POINTLIST
+    ld bc,NUM_POINTS
+    -:
+        ld a,(ix)
+        ld e,(ix + 2)
+
+        ; offset from edge of screen a little
+        inc a
+        inc a
+        inc e
+        inc e
+        
+        push ix
+        push bc
+        call setpixel
+        pop bc
+        pop ix
+        ld de,4
+        add ix,de
+        dec bc
+        ld a,b
+        or c
+        jr nz,{-}
+
+    ; display part2
+    call iFastCopy
+
+
+    ; restore the world
+    ld sp,(old_stack)
+    ld a,00h
+    out (05h),a
+    ld a,0
+    out (20h),a
+    pop iy
+    ei
+
+
+    ld hl,(part1ans)
+    ld a,60
+    ld (penCol),a
+    ld a,4
+    ld (penRow),a
+    call VDispHL
+;    call ConvertToBCD
+;    ld a,0
+;    ld (curRow),a
+;    ld (curCol),a
+;    ld hl,bcdRam
+;    call DispBCD
+
+    b_call(_GetKey)
+
+    ret
+
+;.define BCD64BIT
+.include "source/bcd.z80"
+
+; de - foldLine
+; a  - 'x' or 'y'
+; destroy all but de
+; folds points in place, no deduplication
+foldPointsOverAxis:
+    ; which axis?
+    cp 'x'
+    jp z,{1@}
+    cp 'y'
+    jp z,{2@}
+    ret
+
+    ; 0 = X axis, 1 = Y axis
+    .for _axis,0,1
+    @:
+        ld ix,POINTLIST
+        ld bc,4
+        -:
+            ; FFFF = eof
+            ld a,(ix)
+            and (ix + 1)
+            inc a ; test a = $FF
+            jr z,{+}
+
+            ; HL = point x or y
+            ld l,(ix + (_axis * 2) + 0)
+            ld h,(ix + (_axis * 2) + 1)
+
+            or a
+            sbc hl,de
+            ; No carry, hl >= de. reflect
+            ; Carry, hl < de. do not reflect, just copy
+            jr c,{++}
+            ; reflect
+                ; reflecting is weird like
+                ; axis - (point - axis). we already did point - axis
+                ; so we just need to do the axis - (hl) bit
+                push de ; save axis
+                ex de,hl
+                ; no carry because we're in the nc branch
+                sbc hl,de
+                ld (ix + (_axis * 2) + 0),l
+                ld (ix + (_axis * 2) + 1),h
+                pop de ; restore axis
+            ; noReflect
+            ++:
+
+            add ix,bc
+            jr {-}
+        +:
+        ret
+    .loop
+
+; number of unique points returned in HL
+countUniqueSortedPoints:
+    ld ix,POINTLIST + 4
+    ld hl,0
+    ld de,4
+    ld bc,NUM_POINTS
+    -:
+        .for _byte,0,3
+            ld a,(ix + _byte)
+            cp (ix - 4 + _byte)
+            jr nz,{+} ; not equal, increment unique
+        .loop
+            ; equal, skip inc
+            jr {++}
+        +:
+            inc hl ; increment count of unique points
+        ++:
+        add ix,de
+        dec bc
+        ld a,b
+        or c
+        jr nz,{-}
+    ret
+        
+
+; insertion sort the points, as 4-byte ints
+; we'll use this to make dedup easier
+sortPoints:
+    ; void insertion_sort(int *a, int n) {
+    ld ix,POINTLIST + 4h
+
+    ; for(size_t i = n - 1; i > 0; --i) {
+    ld bc,NUM_POINTS - 1
+    -:
+        ; int tmp = a[n - i];
+        .var 4, _sort_tmp
+        .for _offs,0,3
+            ld a,(ix + _offs)
+            ld (_sort_tmp + _offs),a
+        .loop
+        
+        ; size_t j = n - i;
+        push ix
+        pop iy
+
+        ld hl,NUM_POINTS
+        or a
+        sbc hl,bc
+
+        ; while(j > 0 && tmp < a[j - 1]) {
+        --:
+            ; tmp < a[j - 1]
+
+            ; compare tmp to iy-1
+            ; tmp - a[j - 1]
+            or a
+            .for _offs,0,3
+                ld a,(_sort_tmp + _offs)
+                sbc a,(iy + (_offs - 4))
+            .loop
+            ; if carry, is less than. otherwise break
+            jp nc,{+}
+            
+            ; a[j] = a[j - 1]
+            .for _offs,0,3
+                ld a,(iy + (_offs - 4))
+                ld (iy + _offs),a
+            .loop
+            
+            ; --j
+            ld de,-4
+            add iy,de
+            dec hl
+            ld a,h
+            or l
+            jr nz,{--}
+        +:
+
+        ; a[j] = tmp
+        .for _offs,0,3
+            ld a,(_sort_tmp + _offs)
+            ld (iy + _offs),a
+        .loop
+        
+        ; a++
+        ld de,4
+        add ix,de
+        dec bc
+        ld a,b
+        or c
+        jp nz,{-}
+
+    ret
+
+
+INPUT:
+;.define DEBUG
+.ifdef DEBUG
+.dw 6,10
+.dw 0,14
+.dw 9,10
+.dw 0,3
+.dw 10,4
+.dw 4,11
+.dw 6,0
+.dw 6,12
+.dw 4,1
+.dw 0,13
+.dw 10,12
+.dw 3,4
+.dw 3,0
+.dw 8,4
+.dw 1,10
+.dw 2,14
+.dw 8,10
+.dw 9,0
+POINTS_END:
+.dw $FFFF
+
+FOLDS:
+.db 'y' \ .dw 7
+.db 'x' \ .dw 5
+FOLDS_END:
+.else
+.dw 1026,284
+.dw 612,2
+.dw 355,653
+.dw 711,884
+.dw 1205,14
+.dw 971,348
+.dw 550,313
+.dw 1261,236
+.dw 1155,838
+.dw 33,487
+.dw 1287,690
+.dw 1230,722
+.dw 1230,110
+.dw 73,854
+.dw 1178,81
+.dw 216,719
+.dw 875,794
+.dw 900,334
+.dw 1277,61
+.dw 783,240
+.dw 1099,159
+.dw 303,528
+.dw 624,327
+.dw 108,322
+.dw 698,444
+.dw 990,397
+.dw 1131,856
+.dw 527,273
+.dw 1195,831
+.dw 1029,49
+.dw 1220,688
+.dw 177,724
+.dw 671,478
+.dw 1016,807
+.dw 385,141
+.dw 944,140
+.dw 1084,525
+.dw 984,893
+.dw 1265,243
+.dw 793,543
+.dw 334,581
+.dw 780,128
+.dw 326,669
+.dw 826,845
+.dw 609,38
+.dw 299,126
+.dw 828,758
+.dw 607,212
+.dw 818,313
+.dw 296,343
+.dw 127,421
+.dw 612,486
+.dw 571,294
+.dw 811,838
+.dw 192,45
+.dw 991,516
+.dw 80,546
+.dw 554,547
+.dw 592,33
+.dw 311,192
+.dw 1237,488
+.dw 1205,880
+.dw 1131,605
+.dw 542,410
+.dw 344,674
+.dw 284,284
+.dw 326,569
+.dw 976,581
+.dw 1292,795
+.dw 70,494
+.dw 847,320
+.dw 62,275
+.dw 842,705
+.dw 393,792
+.dw 678,294
+.dw 313,1
+.dw 559,775
+.dw 11,457
+.dw 646,544
+.dw 144,67
+.dw 559,878
+.dw 1066,782
+.dw 492,549
+.dw 45,682
+.dw 1128,84
+.dw 746,323
+.dw 291,585
+.dw 713,786
+.dw 774,86
+.dw 597,114
+.dw 1005,75
+.dw 488,446
+.dw 94,527
+.dw 269,589
+.dw 423,617
+.dw 258,591
+.dw 395,23
+.dw 1205,238
+.dw 340,420
+.dw 27,261
+.dw 587,792
+.dw 170,173
+.dw 972,254
+.dw 875,396
+.dw 1131,528
+.dw 850,2
+.dw 892,94
+.dw 490,873
+.dw 1081,628
+.dw 1041,254
+.dw 925,219
+.dw 1245,435
+.dw 969,109
+.dw 984,673
+.dw 627,411
+.dw 689,855
+.dw 711,487
+.dw 1294,668
+.dw 209,18
+.dw 981,2
+.dw 885,360
+.dw 1101,204
+.dw 499,201
+.dw 870,193
+.dw 435,794
+.dw 107,212
+.dw 1210,99
+.dw 639,864
+.dw 445,18
+.dw 564,766
+.dw 127,660
+.dw 1295,724
+.dw 62,705
+.dw 15,170
+.dw 595,775
+.dw 428,11
+.dw 189,325
+.dw 831,73
+.dw 380,735
+.dw 803,394
+.dw 898,100
+.dw 1243,344
+.dw 1099,253
+.dw 970,868
+.dw 865,38
+.dw 1227,854
+.dw 0,542
+.dw 490,318
+.dw 831,821
+.dw 373,428
+.dw 1193,652
+.dw 1074,542
+.dw 483,133
+.dw 1297,221
+.dw 1108,729
+.dw 726,848
+.dw 705,684
+.dw 202,506
+.dw 397,793
+.dw 536,86
+.dw 684,401
+.dw 1014,674
+.dw 1206,313
+.dw 1216,255
+.dw 134,849
+.dw 189,95
+.dw 706,661
+.dw 662,257
+.dw 396,863
+.dw 616,165
+.dw 1017,285
+.dw 917,254
+.dw 475,500
+.dw 377,658
+.dw 231,103
+.dw 261,550
+.dw 1014,253
+.dw 892,653
+.dw 1265,341
+.dw 492,245
+.dw 1261,96
+.dw 785,722
+.dw 1170,362
+.dw 933,210
+.dw 268,112
+.dw 961,75
+.dw 1260,233
+.dw 1253,667
+.dw 848,849
+.dw 1299,546
+.dw 1036,159
+.dw 1011,126
+.dw 385,723
+.dw 30,327
+.dw 47,682
+.dw 1309,208
+.dw 522,793
+.dw 406,570
+.dw 592,189
+.dw 499,873
+.dw 1216,415
+.dw 236,542
+.dw 1183,869
+.dw 586,59
+.dw 564,284
+.dw 130,807
+.dw 490,128
+.dw 870,253
+.dw 666,780
+.dw 1014,641
+.dw 1133,170
+.dw 1268,296
+.dw 805,394
+.dw 423,197
+.dw 62,640
+.dw 554,291
+.dw 162,128
+.dw 97,136
+.dw 1041,589
+.dw 644,478
+.dw 739,600
+.dw 202,729
+.dw 937,362
+.dw 1260,141
+.dw 900,784
+.dw 874,546
+.dw 766,719
+.dw 974,463
+.dw 140,362
+.dw 351,338
+.dw 1033,236
+.dw 915,863
+.dw 97,696
+.dw 386,784
+.dw 62,702
+.dw 370,200
+.dw 277,236
+.dw 800,84
+.dw 1019,585
+.dw 1213,422
+.dw 999,590
+.dw 564,653
+.dw 274,719
+.dw 179,366
+.dw 791,768
+.dw 1213,24
+.dw 728,795
+.dw 276,213
+.dw 1248,204
+.dw 279,178
+.dw 887,276
+.dw 609,856
+.dw 383,39
+.dw 522,81
+.dw 1230,784
+.dw 933,236
+.dw 783,660
+.dw 1190,162
+.dw 1111,137
+.dw 524,807
+.dw 343,438
+.dw 274,607
+.dw 960,420
+.dw 1277,385
+.dw 1303,154
+.dw 52,771
+.dw 776,21
+.dw 1084,291
+.dw 795,752
+.dw 358,551
+.dw 502,338
+.dw 564,654
+.dw 197,498
+.dw 694,165
+.dw 1298,619
+.dw 726,324
+.dw 229,360
+.dw 604,661
+.dw 175,681
+.dw 45,385
+.dw 1265,354
+.dw 1299,180
+.dw 1155,693
+.dw 38,378
+.dw 1119,635
+.dw 351,80
+.dw 1134,499
+.dw 530,542
+.dw 607,570
+.dw 898,336
+.dw 494,448
+.dw 124,240
+.dw 530,352
+.dw 209,316
+.dw 216,175
+.dw 845,325
+.dw 433,753
+.dw 281,10
+.dw 970,420
+.dw 756,547
+.dw 1150,448
+.dw 1300,332
+.dw 990,133
+.dw 120,162
+.dw 1211,198
+.dw 1041,108
+.dw 1006,824
+.dw 57,108
+.dw 281,532
+.dw 1227,600
+.dw 0,38
+.dw 248,324
+.dw 701,38
+.dw 874,644
+.dw 1029,532
+.dw 643,546
+.dw 390,544
+.dw 1074,459
+.dw 771,417
+.dw 701,89
+.dw 93,429
+.dw 522,529
+.dw 219,407
+.dw 254,99
+.dw 435,851
+.dw 1081,11
+.dw 1034,141
+.dw 440,865
+.dw 967,273
+.dw 644,561
+.dw 560,255
+.dw 811,761
+.dw 643,714
+.dw 335,628
+.dw 527,654
+.dw 991,826
+.dw 269,780
+.dw 1155,761
+.dw 666,562
+.dw 132,81
+.dw 606,124
+.dw 534,694
+.dw 100,99
+.dw 229,628
+.dw 1310,466
+.dw 1004,382
+.dw 385,780
+.dw 1186,318
+.dw 1131,842
+.dw 1197,135
+.dw 179,842
+.dw 698,2
+.dw 175,821
+.dw 226,603
+.dw 932,690
+.dw 776,648
+.dw 621,285
+.dw 445,876
+.dw 1148,345
+.dw 728,877
+.dw 350,70
+.dw 124,521
+.dw 136,301
+.dw 763,548
+.dw 641,634
+.dw 1026,532
+.dw 1213,792
+.dw 1257,821
+.dw 1017,39
+.dw 1213,266
+.dw 724,59
+.dw 1258,771
+.dw 242,794
+.dw 199,49
+.dw 966,674
+.dw 971,796
+.dw 587,316
+.dw 917,640
+.dw 574,348
+.dw 10,113
+.dw 997,893
+.dw 105,238
+.dw 366,826
+.dw 211,159
+.dw 385,675
+.dw 139,781
+.dw 1248,189
+.dw 684,45
+.dw 1134,171
+.dw 425,326
+.dw 281,49
+.dw 281,84
+.dw 639,58
+.dw 1171,304
+.dw 1215,471
+.dw 62,254
+.dw 980,626
+.dw 999,304
+.dw 1022,364
+.dw 621,833
+.dw 1096,865
+.dw 999,621
+.dw 557,248
+.dw 867,794
+.dw 952,220
+.dw 522,101
+.dw 534,200
+.dw 807,73
+.dw 90,508
+.dw 597,395
+.dw 627,483
+.dw 418,800
+.dw 788,81
+.dw 654,121
+.dw 1166,532
+.dw 62,749
+.dw 105,14
+.dw 1014,551
+.dw 976,133
+.dw 179,605
+.dw 518,558
+.dw 268,784
+.dw 1156,798
+.dw 818,766
+.dw 346,756
+.dw 246,336
+.dw 59,103
+.dw 1161,455
+.dw 350,672
+.dw 194,493
+.dw 160,448
+.dw 547,263
+.dw 1245,584
+.dw 780,364
+.dw 311,456
+.dw 428,413
+.dw 892,205
+.dw 310,738
+.dw 530,766
+.dw 97,430
+.dw 1178,365
+.dw 940,162
+.dw 585,773
+.dw 296,674
+.dw 197,844
+.dw 1263,212
+.dw 45,877
+.dw 177,170
+.dw 254,599
+.dw 999,276
+.dw 739,114
+.dw 269,227
+.dw 1252,112
+.dw 937,466
+.dw 477,394
+.dw 132,365
+.dw 18,795
+.dw 410,110
+.dw 612,408
+.dw 370,732
+.dw 97,422
+.dw 1248,749
+.dw 339,42
+.dw 780,542
+.dw 811,348
+.dw 557,136
+.dw 263,472
+.dw 154,798
+.dw 574,558
+.dw 527,212
+.dw 1283,821
+.dw 1222,397
+.dw 294,359
+.dw 956,294
+.dw 455,397
+.dw 373,84
+.dw 1091,234
+.dw 378,690
+.dw 1121,569
+.dw 1052,31
+.dw 398,46
+.dw 674,138
+.dw 293,609
+.dw 1300,751
+.dw 139,590
+.dw 776,694
+.dw 1,226
+.dw 1047,472
+.dw 723,887
+.dw 1253,114
+.dw 589,94
+.dw 780,318
+.dw 45,540
+.dw 315,348
+.dw 1139,166
+.dw 691,645
+.dw 783,269
+.dw 862,38
+.dw 1178,450
+.dw 15,724
+.dw 992,462
+.dw 229,180
+.dw 1133,410
+.dw 1238,547
+.dw 530,318
+.dw 124,542
+.dw 541,759
+.dw 1255,407
+.dw 920,544
+.dw 139,304
+.dw 380,159
+.dw 672,674
+.dw 77,138
+.dw 398,772
+.dw 1215,327
+.dw 77,756
+.dw 694,427
+.dw 776,226
+.dw 1146,889
+.dw 1275,297
+.dw 343,273
+.dw 664,798
+.dw 535,72
+.dw 1108,164
+.dw 385,640
+.dw 68,143
+.dw 264,145
+.dw 763,407
+.dw 919,198
+.dw 1220,571
+.dw 436,644
+.dw 314,868
+.dw 669,484
+.dw 339,98
+.dw 1265,682
+.dw 666,333
+.dw 763,346
+.dw 786,807
+.dw 428,525
+.dw 1176,849
+.dw 1113,844
+.dw 366,875
+.dw 155,469
+.dw 534,284
+.dw 1294,786
+.dw 477,113
+.dw 115,570
+.dw 648,313
+.dw 1178,345
+.dw 967,590
+.dw 949,39
+.dw 445,690
+.dw 372,136
+.dw 1277,487
+.dw 209,486
+.dw 57,780
+.dw 984,876
+.dw 396,591
+.dw 375,255
+.dw 1303,826
+.dw 236,459
+.dw 560,639
+.dw 822,446
+.dw 358,668
+.dw 1074,94
+.dw 833,394
+.dw 753,459
+.dw 1171,113
+.dw 1220,123
+.dw 299,521
+.dw 599,487
+.dw 326,893
+.dw 16,108
+.dw 99,696
+.dw 1171,590
+.dw 550,581
+.dw 952,332
+.dw 484,621
+.dw 115,63
+.dw 1158,445
+.dw 219,234
+.dw 1016,87
+.dw 479,73
+.dw 1005,819
+.dw 32,87
+.dw 130,87
+.dw 416,721
+.dw 780,373
+.dw 350,420
+.dw 1026,834
+.dw 683,768
+.dw 1094,47
+.dw 393,542
+.dw 557,292
+.dw 246,768
+.dw 385,499
+.dw 221,141
+.dw 1268,598
+.dw 390,145
+.dw 1041,590
+.dw 959,338
+.dw 1148,21
+.dw 313,561
+.dw 477,500
+.dw 855,621
+.dw 746,284
+.dw 872,847
+.dw 97,24
+.dw 927,39
+.dw 627,821
+.dw 887,343
+.dw 909,210
+.dw 284,532
+.dw 776,284
+.dw 914,591
+.dw 703,831
+.dw 816,448
+.dw 1260,661
+.dw 1205,126
+.dw 574,546
+.dw 763,375
+.dw 967,254
+.dw 507,38
+.dw 155,133
+.dw 498,89
+.dw 231,690
+.dw 373,466
+.dw 42,598
+.dw 586,54
+.dw 914,303
+.dw 919,646
+.dw 932,242
+.dw 826,621
+.dw 1252,782
+.dw 514,705
+.dw 933,535
+.dw 105,880
+.dw 1146,535
+.dw 1,208
+.dw 340,868
+.dw 176,499
+.dw 557,198
+.dw 574,110
+.dw 994,254
+.dw 701,805
+.dw 917,577
+.dw 319,516
+.dw 460,786
+.dw 564,688
+.dw 1230,558
+.dw 1265,877
+.dw 937,84
+.dw 905,84
+.dw 1186,206
+.dw 952,551
+.dw 633,595
+.dw 277,210
+.dw 667,9
+.dw 18,99
+.dw 246,322
+.dw 1155,166
+.dw 537,354
+.dw 882,861
+.dw 120,873
+.dw 206,572
+.dw 94,415
+.dw 820,784
+.dw 701,465
+.dw 967,142
+.dw 957,101
+.dw 703,324
+.dw 609,651
+.dw 274,383
+.dw 393,688
+.dw 997,113
+.dw 627,768
+.dw 1213,214
+.dw 974,350
+.dw 418,206
+.dw 296,641
+.dw 246,558
+.dw 1258,186
+.dw 291,521
+.dw 1248,254
+.dw 536,808
+.dw 47,212
+.dw 1183,234
+.dw 1042,110
+.dw 156,89
+.dw 152,21
+.dw 127,436
+.dw 587,887
+.dw 833,113
+.dw 1033,882
+.dw 937,458
+.dw 90,386
+.dw 1036,735
+.dw 638,108
+.dw 947,309
+.dw 15,836
+.dw 400,795
+.dw 107,498
+.dw 326,18
+.dw 194,625
+.dw 1253,141
+.dw 445,130
+.dw 418,653
+.dw 518,593
+.dw 1242,751
+.dw 171,728
+.dw 18,771
+.dw 65,352
+.dw 47,324
+.dw 1108,506
+.dw 68,751
+.dw 875,548
+.dw 314,474
+.dw 1108,165
+.dw 709,821
+.dw 140,189
+.dw 1205,432
+.dw 408,770
+.dw 293,386
+.dw 708,771
+.dw 919,248
+.dw 736,722
+.dw 1233,756
+.dw 736,348
+.dw 1216,639
+.dw 97,628
+.dw 832,395
+.dw 875,487
+.dw 878,0
+.dw 930,607
+.dw 671,836
+.dw 390,413
+.dw 547,487
+.dw 373,234
+.dw 599,407
+.dw 452,602
+.dw 45,341
+.dw 937,884
+.dw 1283,633
+.dw 269,108
+.dw 831,521
+.dw 751,343
+.dw 52,571
+.dw 981,238
+.dw 90,123
+.dw 288,19
+.dw 818,245
+.dw 1158,415
+.dw 811,693
+.dw 1272,50
+.dw 783,436
+.dw 1091,711
+.dw 97,214
+.dw 435,407
+.dw 261,102
+.dw 1056,99
+.dw 788,549
+.dw 656,121
+.dw 301,351
+.dw 423,103
+.dw 162,649
+.dw 1253,780
+.dw 45,212
+.dw 492,128
+.dw 242,346
+.dw 189,773
+.dw 1042,784
+.dw 1000,556
+.dw 547,346
+.dw 13,708
+.dw 293,855
+.dw 221,96
+.dw 319,628
+.dw 433,798
+.dw 279,271
+.dw 773,710
+.dw 835,366
+.dw 761,768
+.dw 1061,532
+.dw 55,212
+.dw 1014,103
+.dw 567,666
+.dw 654,38
+.dw 1198,410
+.dw 503,73
+.dw 343,254
+.dw 288,530
+.dw 803,856
+.dw 805,439
+.dw 372,758
+.dw 12,275
+.dw 530,373
+.dw 358,332
+.dw 689,61
+.dw 296,114
+.dw 1158,21
+.dw 592,861
+.dw 619,645
+.dw 425,646
+.dw 281,845
+.dw 433,141
+.dw 1241,325
+.dw 154,544
+.dw 721,94
+.dw 1178,338
+.dw 10,562
+.dw 499,56
+.dw 724,54
+.dw 492,560
+.dw 933,658
+.dw 827,133
+.dw 1081,360
+.dw 1068,336
+.dw 325,892
+.dw 53,821
+.dw 994,864
+.dw 170,621
+.dw 440,641
+.dw 527,240
+.dw 1297,673
+.dw 1175,96
+.dw 311,276
+.dw 1183,421
+.dw 858,602
+.dw 1245,459
+.dw 306,512
+.dw 541,154
+.dw 1123,304
+.dw 1148,128
+.dw 534,668
+.dw 626,45
+.dw 736,336
+.dw 267,343
+.dw 492,101
+.dw 638,332
+.dw 231,791
+.dw 1108,542
+.dw 1061,756
+.dw 587,344
+.dw 1178,556
+.dw 713,114
+.dw 361,855
+.dw 244,602
+.dw 1211,696
+.dw 828,880
+.dw 910,795
+.dw 537,710
+.dw 1288,196
+.dw 164,318
+.dw 304,420
+.dw 65,584
+.dw 1026,648
+.dw 72,547
+.dw 982,225
+.dw 959,80
+.dw 320,761
+.dw 11,546
+.dw 525,396
+.dw 902,770
+.dw 1183,436
+.dw 984,18
+.dw 820,873
+.dw 492,345
+.dw 999,456
+.dw 862,892
+.dw 1146,318
+.dw 944,530
+.dw 187,304
+.dw 1047,696
+.dw 971,98
+.dw 1235,722
+.dw 279,324
+.dw 57,786
+.dw 518,348
+.dw 10,332
+.dw 154,350
+.dw 344,220
+.dw 249,756
+.dw 269,171
+.dw 636,67
+.dw 740,784
+.dw 1186,542
+.dw 1029,845
+.dw 808,21
+.dw 59,775
+.dw 391,696
+.dw 756,603
+.dw 704,770
+.dw 313,551
+.dw 373,884
+.dw 967,459
+.dw 749,429
+.dw 780,688
+.dw 277,12
+.dw 300,369
+.dw 885,646
+.dw 918,472
+.dw 1041,171
+.dw 606,770
+.dw 277,882
+.dw 425,86
+.dw 1099,511
+.dw 1056,599
+.dw 1265,509
+.dw 1033,12
+.dw 1156,544
+.dw 739,294
+.dw 933,684
+.dw 499,838
+.dw 416,173
+.dw 641,260
+.dw 300,525
+.dw 194,269
+.dw 378,652
+.dw 1163,285
+.dw 713,443
+.dw 281,18
+.dw 643,9
+.dw 1053,325
+.dw 1186,240
+.dw 274,511
+.dw 23,204
+.dw 567,228
+.dw 186,257
+.dw 268,110
+.dw 592,77
+.dw 887,103
+.dw 769,154
+.dw 683,73
+.dw 1223,228
+.dw 479,521
+.dw 281,789
+.dw 1046,145
+.dw 1084,883
+.dw 557,602
+.dw 662,637
+.dw 628,600
+.dw 105,126
+.dw 440,193
+.dw 1198,484
+.dw 482,758
+.dw 997,561
+.dw 490,466
+.dw 136,546
+.dw 736,546
+.dw 956,525
+POINTS_END:
+.dw $FFFF
+
+FOLDS:
+.db 'x' \ .dw 655
+.db 'y' \ .dw 447
+.db 'x' \ .dw 327
+.db 'y' \ .dw 223
+.db 'x' \ .dw 163
+.db 'y' \ .dw 111
+.db 'x' \ .dw 81
+.db 'y' \ .dw 55
+.db 'x' \ .dw 40
+.db 'y' \ .dw 27
+.db 'y' \ .dw 13
+.db 'y' \ .dw 6
+FOLDS_END:
+.endif
+.db 0
+INPUT_END:
+NUM_POINTS = (POINTS_END - INPUT) / 4
+.echoln NUM_POINTS
