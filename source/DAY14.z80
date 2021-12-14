@@ -1,0 +1,745 @@
+.nolist
+.global
+#include "ti83plus.inc"
+#include "dcs7.inc"
+.endglobal
+.variablename DAY14
+.list
+    .org progstart
+    .db $BB,$6D
+Init:
+    xor d
+    ret
+    jr Start
+    .dw Description
+    .db $07,$00
+    .dw $0000
+    .dw $0000
+Description:
+    .db "day 14",0
+
+.include "source/float.z80"
+.varloc saferam2, 500
+Start:
+
+Main:
+    bcall(_ClrScrnFull)
+
+
+
+
+    di
+    ; while we're at it, might as well use iy
+    push iy
+    ; Map bank 5 @ C000h
+    ld a,05h
+    out (05h),a
+    ; 15MHz
+    ld a,1
+    out (20h),a
+
+    ; move the stack pointer
+    .var 2, old_stack
+    ld (old_stack),sp
+    ld sp,saferam1 + 768
+
+
+    ; So we dont have enough ram to do the simple solution to this one,
+    ; need to do recursive graph traversal, which the problem seems set up
+    ; for.
+    ; BUT we can do it faster with memoization
+    ;
+    ; We're gonna memoize the steps here starting from the bottom of the
+    ; tree going up. For each two-letter pair, we store how many of each
+    ; letter will result at that depth. So at depth 1, its just whatever
+    ; the direct mapping is. At depth two, its that and the child mappings.
+    ; And so on.
+    ;
+    ; We do this breadth-first, so we calculate depth 1 for all pairs. Then we
+    ; can calculate depth 2 for all pairs based on depth 1, and so on.
+    ;
+    ; Once we're done we can feed out input sequence into this to get the
+    ; letter frequencies that result
+    ;
+    ; For any given letter pair XY(D)->Z the counters look like Z + XZ(D-1) + YZ(D-1)
+    ;
+    ; We only have 10 possible letters so this looks like a 10 * 10 * 10 array
+    ; of 8-bit numbers.
+    ;
+    ; oh but we actually need it twice on two different ram pages
+    ;
+    ; To simplify math we're gonna do 16 * 16 * 10 6-bit numbers
+
+    ; Then we need to store the counters, so we use a 5-bit index, but
+    ; the counters need to be 64 bit so we end up with a 256 byte array
+    ; for that one.
+
+
+    MEMO_TABLE = C000h
+    COUNTERS = F800h
+    LETTER_MAPPING = 8000h ; appData
+    LETTER_MAPPING_COUNT = LETTER_MAPPING + 31
+    
+    ; Zero letter mapping
+    xor a
+    ld b,32
+    ld hl,LETTER_MAPPING
+    -:
+        ld (hl),a
+        inc hl
+        djnz {-}
+
+    .var 1, activePage
+    ld a,05h
+    ld (activePage),a
+
+    ; Zero out the whole-ass ram page like i give a fuck
+    xor a
+    ld c,16384 >> 8
+    ld b,0
+    ld hl,C000h
+    --:
+        -:
+            ld (hl),a
+            inc hl
+            djnz {-}
+        dec c
+        jr nz,{--}
+
+    ; And the other one
+    ld a,04h
+    out (05h),a
+    xor a
+    ld c,16384 >> 8
+    ld b,0
+    ld hl,C000h
+    --:
+        -:
+            ld (hl),a
+            inc hl
+            djnz {-}
+        dec c
+        jr nz,{--}
+
+    ld a,05h
+    out (05h),a
+
+    call polymerizeAllPairs
+;    ld b,10
+;    -:
+;        push bc
+;        call polymerizeAllPairs
+;        pop bc
+;        djnz {-}
+
+    ;call sumPairs
+    call sortCounters
+
+    ; Find the minimum counter that isnt 0
+    ld ix,COUNTERS - 8
+    ld de,8
+    -:
+        add ix,de
+        ld a,(ix)
+        .for _byte,1,7
+            or (ix + _byte)
+        .loop
+        jr z,{-}
+
+    ; IX = min. do subtraction
+    ; IY = max
+    .var 8,part1ans
+    ld iy,COUNTERS + 256 - 8
+    or a
+    .for _byte,0,7
+        ld a,(iy + _byte)
+        sbc a,(ix + _byte)
+        ld (part1ans + _byte),a
+    .loop
+
+
+    ; restore the world
+    ld sp,(old_stack)
+    ld a,00h
+    out (05h),a
+    ld a,0
+    out (20h),a
+    pop iy
+    ei
+
+
+    ld hl,part1ans
+    call ConvertToBCD
+    ld a,0
+    ld (curRow),a
+    ld (curCol),a
+    ld hl,bcdRam
+    call DispBCD
+
+    .var 8, part2ans
+    ld hl,part2ans
+    call ConvertToBCD
+    ld a,2
+    ld (curRow),a
+    ld a,0
+    ld (curCol),a
+    ld hl,bcdRam
+    call DispBCD
+
+    b_call(_GetKey)
+
+    ret
+
+.define BCD64BIT
+.include "source/bcd.z80"
+
+
+; Get an ID for a letter in a
+; destroy HL
+getIDForLetter:
+    sub 'A'
+    ld h,LETTER_MAPPING >> 8
+    ld l,a
+
+    ld a,(hl)
+    or a
+    ret nz
+
+    ld a,(LETTER_MAPPING_COUNT)
+    ld (hl),a
+    inc a
+    ld (LETTER_MAPPING_COUNT),a
+    dec a
+    ret
+    
+
+
+
+; D = Left
+; E = Right
+memoTableIndex:
+    ; shift over 2 bits
+    sla e
+    rl d
+    sla e
+    rl d
+
+    ld hl,MEMO_TABLE
+    add hl,de
+    ret
+
+
+; Fill in the insertion LUT from the mapping
+; Starts on the previous page, swaps to new page for writes. ends on new page
+polymerizeAllPairs:
+    ld ix,MAPPING_START
+    ld b,(MAPPING_END - MAPPING_START) / 3
+
+    .var 64, newMemoEntry
+    -:
+        push bc
+
+        ld a,(ix + 0)
+        call getIDForLetter
+        ld d,a
+
+        ld a,(ix + 1)
+        call getIDForLetter
+        ld e,a
+
+        push de ; save inputs for later use
+
+        call memoTableIndex
+        
+
+        ; copy the memo table into working memory
+        push hl
+        ld de,newMemoEntry
+        ld bc,64
+        ldir
+
+
+        ld a,(ix + 2)
+        call getIDForLetter
+        pop hl ; restore memo table
+
+        ; save the result product
+        push af
+
+        ; Now mult this time 6 to get to the right 6-bit number
+        add a,a ; 2x
+        ld c,a
+        add a,a ; 4x
+        add a,c ; 2x + 4x = 6x
+
+        ld d,0
+        ld e,a
+        add hl,de
+        ex de,hl ; DE = current memo table, HL = offset
+
+        ld bc,newMemoEntry
+        add hl,bc
+
+        ; Inc the counter
+        ld a,(de)
+        add a,1
+        ld (hl),a
+        .repeat 5
+            inc de
+            inc hl
+            ld a,(de)
+            adc a,0
+            ld (hl),a
+        .loop
+
+        
+        ; Now add the sums from the other ones
+        pop af ; A = middle
+        pop de ; DE = L/R
+        push de
+        push af
+
+        ; left
+        ld e,a
+        call memoTableIndex
+        ld de,newMemoEntry
+
+        ; add all 10 values
+        ld b,10
+        -:
+            ld a,(de)
+            add a,(hl)
+            ld (de),a
+            inc de
+            inc hl
+            .repeat 5
+                ld a,(de)
+                adc a,(hl)
+                ld (de),a
+                inc de
+                inc hl
+            .loop
+            djnz {-}
+
+        ; right
+        pop af
+        pop de
+        push de
+
+        ld d,a
+        call memoTableIndex
+        ld de,newMemoEntry
+
+        ; add all 10 values
+        ld b,10
+        -:
+            ld a,(de)
+            add a,(hl)
+            ld (de),a
+            inc de
+            inc hl
+            .repeat 5
+                ld a,(de)
+                adc a,(hl)
+                ld (de),a
+                inc de
+                inc hl
+            .loop
+            djnz {-}
+
+
+        pop de
+        call memoTableIndex
+        ex de,hl
+        ld hl,newMemoEntry
+        ld bc,64
+
+        ; switch to new table
+        ld a,(activePage)
+        xor 1
+        out (05h),a
+        ldir
+        ld a,(activePage)
+        out (05h),a
+
+
+        pop bc
+        ld de,3
+        add ix,de
+        dec b
+        jp nz,{-}
+
+    +++:
+
+    ; swap active pages
+    ld a,(activePage)
+    xor 1
+    out (05h),a
+    ld (activePage),a
+    ret
+
+; sumPairs
+sumPairs:
+    ld hl,MEMO_TABLE
+    ld de,COUNTERS
+
+    ld c,10
+    -:
+        push hl
+        ld b,160
+        --:
+            push de
+            ld a,(de)
+            add a,(hl)
+            ld (de),a
+            .repeat 5
+                inc hl
+                inc de
+                ld a,(de)
+                adc a,(hl)
+                ld (de),a
+            .loop
+
+            ; advance to next entry
+            ld de,57
+            add hl,de
+
+            ; restore counter pointer
+            pop de
+            djnz {--}
+        pop hl
+
+        ld a,l
+        add a,64
+        ld l,a
+        ld a,h
+        adc a,0
+        ld h,a
+
+        ld a,e
+        add a,8
+        ld e,a
+        ld a,d
+        adc a,0
+        ld d,a
+
+        dec c
+        jr nz,{-}
+    ret
+
+
+
+; Polymerize a pair of values recursively
+; b = remaining depth. If 1, adds mapping result to counter. otherwise,
+; recursively map
+; D = left molecule
+; E = right molecule
+polymerizePair:
+    push de ; store the molecule pair
+    
+    ; generate index into LUT
+    xor a
+    rr d
+    rra
+    rr d
+    rra
+    rr d
+    rra
+    or e
+    ld e,a
+    ;ld hl,INSERT_LUT
+    add hl,de
+
+    ; Add the newly generated element to counter
+    ; This one is easier, just val << 3
+    ld a,(hl)
+    ld c,a ; store the middle molecule in c
+    rla ; add cleared the carry
+    rla
+    rla
+
+    ld h,COUNTERS >> 8
+    ld l,a
+
+    ; 64-bit increment is pain
+    ld a,(hl)
+    add a,1
+    ld (hl),a
+    inc hl
+    .repeat 7
+        ld a,(hl)
+        adc a,0
+        ld (hl),a
+        inc hl
+    .loop
+
+
+    ; restore the molecule inputs.
+    ; at this point, the middle molecule is in c
+    pop de
+    
+    ; What do we do now?
+    dec b
+    ret z ; b is zero, so just return. DONE!
+
+    ; b is, non-zero, need to recurse
+    push de
+    push bc
+    
+    ; Left side
+    ld e,c
+    call polymerizePair
+
+    ; Right side
+    pop bc
+    pop de
+    ld d,c
+    jp polymerizePair
+
+; To polymerize the template we iterate over the thing and
+; polymerize the pairs, but need to translate them first
+; b = number of steps to polymerize (needed for part1 vs part2)
+polymerizeTemplate:
+    ; self modifying code lol, cant help ourselves
+    ld a,b
+    ld (_numberOfStepsToPolymerize + 1),a
+
+    ; First, initialize the counters with the template itself.
+    ; Don't need 64 bit math here since theyre 0 already
+    ld ix,TEMPLATE_START
+    ld b,TEMPLATE_END - TEMPLATE_START
+    -:
+        ld a,(ix)
+        sub 'A'
+        rla
+        rla
+        rla
+        ld h,COUNTERS >> 8
+        ld l,a
+        inc (hl)
+        inc ix
+        djnz {-}
+
+
+    ; Do polymerization
+    ld ix,TEMPLATE_START
+    ld b,TEMPLATE_END - TEMPLATE_START - 1
+    -:
+        push bc
+
+        ld a,(ix)
+        sub 'A'
+        ld d,a
+        ld a,(ix + 1)
+        sub 'A'
+        ld e,a
+        _numberOfStepsToPolymerize:
+        ld b,10 ; number of steps
+        call polymerizePair
+
+        inc ix
+        pop bc
+        djnz {-}
+    ret
+
+; Sort the counters so we can do part1
+sortCounters:
+    ; void insertion_sort(int *a, int n) {
+    ld ix,COUNTERS + 8h
+
+    ; for(size_t i = n - 1; i > 0; --i) {
+    ld b,10 - 1
+    -:
+        ; int tmp = a[n - i];
+        .var 8, sort_tmp
+        .for _offs,0,7
+            ld a,(ix + _offs)
+            ld (sort_tmp + _offs),a
+        .loop
+        
+        ; size_t j = n - i;
+        push ix
+        pop iy
+        ld a,10
+        sub b
+        ld c,a
+
+        ; while(j > 0 && tmp < a[j - 1]) {
+        --:
+            ; tmp < a[j - 1]
+
+            ; compare tmp to iy-1
+            ; tmp - a[j - 1]
+            or a
+            .for _offs,0,7
+                ld a,(sort_tmp + _offs)
+                sbc a,(iy + (_offs - 8))
+            .loop
+            ; if carry, is less than. otherwise break
+            jp nc,{+}
+            
+            ; a[j] = a[j - 1]
+            .for _offs,0,7
+                ld a,(iy + (_offs - 8))
+                ld (iy + _offs),a
+            .loop
+            
+            ; --j
+            ld de,-8
+            add iy,de
+            dec c
+            jp nz,{--}
+        +:
+
+        ; a[j] = tmp
+        .for _offs,0,7
+            ld a,(sort_tmp + _offs)
+            ld (iy + _offs),a
+        .loop
+        
+        ; a++
+        ld de,8
+        add ix,de
+        dec b
+        jp nz,{-}
+    ret
+
+
+INPUT:
+.define DEBUG
+.ifdef DEBUG
+
+TEMPLATE_START:
+.db "NNCB"
+TEMPLATE_END:
+
+MAPPING_START:
+.db "CHB"
+.db "HHN"
+.db "CBH"
+.db "NHC"
+.db "HBC"
+.db "HCB"
+.db "HNC"
+.db "NNC"
+.db "BHH"
+.db "NCB"
+.db "NBB"
+.db "BNB"
+.db "BBN"
+.db "BCB"
+.db "CCN"
+.db "CNC"
+MAPPING_END:
+.else
+
+TEMPLATE_START:
+.db "BCHCKFFHSKPBSNVVKVSK"
+TEMPLATE_END
+
+MAPPING_START:
+.db "OVV"
+.db "COV"
+.db "CSO"
+.db "NPH"
+.db "HHP"
+.db "KOF"
+.db "VOB"
+.db "SPO"
+.db "CBN"
+.db "SBF"
+.db "CFS"
+.db "KSP"
+.db "OHH"
+.db "NNO"
+.db "SFK"
+.db "FHF"
+.db "VVB"
+.db "VHO"
+.db "BVV"
+.db "KFK"
+.db "CCF"
+.db "NFH"
+.db "VSO"
+.db "SKK"
+.db "HVO"
+.db "CKK"
+.db "VPF"
+.db "HPS"
+.db "CNK"
+.db "OBH"
+.db "NSF"
+.db "PSS"
+.db "KBS"
+.db "VFS"
+.db "FPH"
+.db "BBN"
+.db "HFV"
+.db "CHN"
+.db "BHF"
+.db "KKB"
+.db "OON"
+.db "NOK"
+.db "BPK"
+.db "KHP"
+.db "KNP"
+.db "OFB"
+.db "VCF"
+.db "NKF"
+.db "ONO"
+.db "OCP"
+.db "VKO"
+.db "SHC"
+.db "NHC"
+.db "FBB"
+.db "FCK"
+.db "OPO"
+.db "PVV"
+.db "BNV"
+.db "PCK"
+.db "PKS"
+.db "FFC"
+.db "SVS"
+.db "HKH"
+.db "NBC"
+.db "OKC"
+.db "PHB"
+.db "SOO"
+.db "PPF"
+.db "KVV"
+.db "FOB"
+.db "FNH"
+.db "HNC"
+.db "VBK"
+.db "CVO"
+.db "BCC"
+.db "CPS"
+.db "FSS"
+.db "KPV"
+.db "BSV"
+.db "BKB"
+.db "PNC"
+.db "PFS"
+.db "HOV"
+.db "NCN"
+.db "SSN"
+.db "BOP"
+.db "BFN"
+.db "NVP"
+.db "PBK"
+.db "HBH"
+.db "VNH"
+.db "FVB"
+.db "FKK"
+.db "POS"
+.db "SCS"
+.db "HSS"
+.db "KCF"
+.db "HCS"
+.db "OSK"
+.db "SNN"
+MAPPING_END:
+
+.endif
+.db 0
+INPUT_END:
