@@ -1,0 +1,275 @@
+.nolist
+.global
+#include "ti83plus.inc"
+#include "dcs7.inc"
+.endglobal
+.variablename DAY16
+.list
+    .org progstart
+    .db $BB,$6D
+Init:
+    xor d
+    ret
+    jr Start
+    .dw Description
+    .db $07,$00
+    .dw $0000
+    .dw $0000
+Description:
+    .db "day 16",0
+
+.include "source/float.z80"
+.include "source/memory.z80"
+.include "source/control.z80"
+
+.varloc saferam2, 500
+Start:
+
+Main:
+    bcall(_ClrScrnFull)
+
+
+
+
+    di
+    ; while we're at it, might as well use iy
+    push iy
+    ; Map bank 5 @ C000h
+    ld a,05h
+    out (05h),a
+    ; 15MHz
+    ld a,1
+    out (20h),a
+
+    ; move the stack pointer
+    .var 2, old_stack
+    ld (old_stack),sp
+    ld sp,saferam1 + 768
+
+    ; This one is binary parsing, which assembly is good at :)
+
+
+    PACKET = C000h
+    memcpy(INPUT, PACKET, INPUT_END - INPUT)
+
+    call traverseMessage
+
+    .var 8,part1ans
+    .var 8,part2ans
+    memset(part1ans, 8, 0)
+    memset(part2ans, 8, 0)
+    ld hl,(versionNumberSum)
+    ld (part1ans),hl
+
+
+    ; restore the world
+    ld sp,(old_stack)
+    ld a,00h
+    out (05h),a
+    ld a,0
+    out (20h),a
+    pop iy
+    ei
+
+
+
+    ld hl,part1ans
+    call ConvertToBCD
+    ld a,0
+    ld (curRow),a
+    ld (curCol),a
+    ld hl,bcdRam
+    call DispBCD
+
+    ld hl,part2ans
+    call ConvertToBCD
+    ld a,2
+    ld (curRow),a
+    ld a,0
+    ld (curCol),a
+    ld hl,bcdRam
+    call DispBCD
+
+    b_call(_GetKey)
+
+    ret
+
+.define BCD64BIT
+.include "source/bcd.z80"
+
+; Consume `b` bits from ix
+; Returns bits in a
+; destroy bc
+.var 1, bitsRemaining
+.var 2, bitsConsumed
+consumeBitsA:
+    ld hl,(bitsConsumed)
+    ld a,l
+    add a,b
+    ld l,a
+    ld a,h
+    adc a,0
+    ld h,a
+    ld (bitsConsumed),hl
+
+    ld a,(bitsRemaining)
+    ld c,a
+    xor a
+    -:
+        rl (ix)
+        rla
+        dec c
+        jr nz,{+}
+            inc ix
+            ld c,8
+        +:
+        djnz {-}
+    push af
+    ld a,c
+    ld (bitsRemaining),a
+    pop af
+    ret
+
+
+; destroys a,b
+consumeBitsDE:
+    ld de,(bitsConsumed)
+    ld a,e
+    add a,b
+    ld e,a
+    ld a,d
+    adc a,0
+    ld d,a
+    ld (bitsConsumed),de
+
+    ld a,(bitsRemaining)
+    ld de,0
+    -:
+        rl (ix)
+        rl e
+        rl d
+        dec a
+        jr nz,{+}
+            inc ix
+            ld a,8
+        +:
+        djnz {-}
+    ld (bitsRemaining),a
+    ret
+
+.deflong eat(n)
+    ld b,n
+    call consumeBits
+.enddeflong
+
+
+
+.var 2, versionNumberSum
+traverseMessage:
+    ld hl,0
+    ld (versionNumberSum),hl
+
+    ld a,8
+    ld (bitsRemaining),a
+    ld hl,0
+    ld (bitsConsumed),hl
+
+    ld ix,PACKET
+    jp traversePacket
+
+; Traverse a packet at HL
+traversePacket:
+    ; version header
+    ld b,3
+    call consumeBitsA
+    ld d,0
+    ld e,a ; version
+    ld hl,(versionNumberSum)
+    add hl,de
+    ld (versionNumberSum),hl
+
+    ; packet type
+    ld b,3
+    call consumeBitsA
+
+    cp 4
+    jr nz,_packetOperator
+
+    _packetLiteral:
+        ; literal bits are packet in groups of 5 until the group leads with 0
+        -:
+            ld b,5
+            call consumeBitsA
+            and 10000b
+            jr nz,{-}
+        ret
+    
+    _packetOperator:
+        ; length type
+        ld b,1
+        call consumeBitsA
+        or a
+        jr nz,_lengthType1
+        _lengthType0:
+            ; next 15 bits are length in bits if sub-packets
+            ld b,15
+            call consumeBitsDE
+            
+            ; check not zero
+            ld a,d
+            or e
+            ret z
+
+            ; mark end bit
+            ld hl,(bitsConsumed)
+            add hl,de
+            push hl
+
+            ; read sub-packets until all bits consumed
+            -:
+                call traversePacket
+                ld de,(bitsConsumed)
+                pop hl
+                push hl
+                or a
+                sbc hl,de
+                jr nz,{-}
+
+            pop hl
+            ret
+
+        _lengthType1:
+            ; next 11 bits are number on subpackets
+            ld b,11
+            call consumeBitsDE
+
+            ; check not zero
+            ld a,d
+            or e
+            ret z
+
+            -:
+                push de
+                call traversePacket
+                pop de
+                dec de
+                ld a,d
+                or e
+                jr nz,{-}
+            ret
+    ret
+
+
+
+
+    
+
+
+INPUT:
+.define DEBUG
+.ifdef DEBUG
+.db 62h,00h,80h,00h,16h,11h,56h,2Ch,88h,02h,11h,8Eh,34h
+.else
+.db E0h,52h,5Dh,98h,02h,FAh,00h,B8h,00h,21h,B1h,3Eh,2Dh,42h,60h,00h,43h,21h,DCh,64h,8Dh,72h,9Dh,D6h,7Bh,24h,12h,00h,99h,66h,D7h,6Ch,01h,59h,EDh,27h,4Fh,69h,21h,40h,2Eh,9Fh,D4h,ACh,1Bh,0Fh,65h,2Ch,D3h,39h,D7h,B8h,22h,40h,08h,3Ch,9Ah,54h,E8h,19h,80h,2Bh,36h,9Dh,C0h,08h,2Ch,F9h,0Ch,F9h,28h,00h,81h,72h,7Dh,AFh,41h,E6h,A5h,C1h,B9h,B8h,E4h,1Ah,4Fh,31h,A4h,EFh,67h,E2h,00h,98h,34h,01h,59h,86h,F9h,ABh,E4h,1Eh,7Dh,60h,80h,21h,39h,31h,CBh,00h,42h,70h,DEh,5Dh,D4h,C0h,10h,E0h,0Dh,50h,40h,1Bh,8Ah,70h,8Eh,3Fh,80h,02h,1Fh,0Bh,E0h,A4h,3Dh,9Eh,46h,00h,07h,E6h,2Ah,CEh,E7h,F9h,FBh,44h,91h,BCh,22h,60h,09h,0Ah,57h,3Ah,87h,6Bh,1Bh,C4h,D6h,79h,BAh,7Ah,64h,24h,01h,43h,49h,37h,C9h,11h,CDh,98h,49h,10h,49h,0Ch,CFh,C2h,7Ch,C7h,EEh,68h,60h,09h,CFh,C5h,7Eh,C0h,14h,9Ch,EFh,E4h,D1h,35h,A0h,C2h,00h,C0h,F4h,01h,29h,8Bh,CFh,26h,53h,77h,F7h,9Ch,27h,9Fh,54h,02h,79h,ACh,CEh,5Ah,82h,0Ch,B0h,44h,B6h,22h,99h,29h,1Ch,01h,98h,02h,54h,01h,AAh,00h,02h,1Dh,18h,22h,BCh,5Ch,10h,07h,63h,A4h,69h,8Fh,B3h,50h,E6h,18h,4Ch,00h,A9h,82h,02h,00h,FAh,F0h,02h,44h,99h,8Fh,67h,D5h,99h,98h,F6h,7Dh,5Ah,93h,ECh,B0h,D6h,E0h,16h,4Dh,70h,9Ah,47h,F5h,AEh,B6h,61h,2Dh,1Bh,1Ah,C7h,88h,84h,60h,08h,78h,02h,52h,55h,50h,97h,F5h,1Fh,26h,3Ah,1Ch,A0h,0Ch,4Dh,09h,46h,B9h,26h,69h,EEh,47h,31h,50h,60h,08h,12h,06h,C9h,62h,08h,B0h,B2h,61h,0Eh,7Bh,38h,97h,37h,F3h,E2h,00h,6Dh,66h,C1h,A1h,D4h,ABh,ECh,3Eh,10h,03h,A3h,B0h,80h,5Dh,33h,7Ch,2Fh,4Fh,A5h,CDh,83h,CEh,7Dh,A6h,7Ah,30h,4Eh,9Bh,EEh,F3h,2Dh,CEh,F0h,8Ah,40h,00h,20h,B1h,96h,7Fh,C2h,66h,00h,84h,BCh,77h,BAh,C3h,F8h,47h,B0h,04h,E6h,CAh,26h,CAh,14h,00h,95h,00h,39h,00h,BAh,A3h,00h,21h,40h,08h,70h,03h,D4h,00h,80h,02h,2Eh,8Ch,00h,87h,00h,39h,40h,0Eh,10h,02h,D4h,00h,F1h,00h,38h,C0h,0Dh,10h,02h,18h,03h,8Fh,40h,0Bh,61h,00h,22h,95h,00h,22h,66h,99h,FEh,B9h,F9h,B0h,98h,02h,1Ah,00h,80h,00h,21h,50h,76h,27h,C3h,21h,00h,6Eh,24h,C5h,78h,4Bh,16h,0Ch,01h,4Ah,00h,54h,A6h,4Eh,64h,BBh,54h,59h,DEh,82h,18h,03h,32h,40h,93h,AEh,B3h,25h,46h,00h,B4h,BFh,75h,C5h,0Dh,00h,46h,56h,2Fh,72h,B1h,79h,30h,04h,66h,7Bh,6Eh,78h,EFh,C0h,13h,9Fh,D5h,34h,73h,34h,09h,23h,2Dh,77h,42h,E4h,02h,85h,08h,03h,F1h,FAh,31h,43h,D0h,00h,42h,22h,6Ch,4Ah,8Bh,80h,00h,84h,C5h,28h,FDh,15h,27h,E9h,8Dh,5Eh,B4h,5Ch,60h,03h,FEh,7Fh,7Fh,CBh,A0h,00h,A1h,E6h,00h,FCh,5Ah,83h,11h,F0h,80h,10h,98h,3Fh,0Bh,A0h,89h,00h,21h,F1h,B6h,1Ch,C4h,62h,01h,40h,ECh,01h,01h,00h,76h,2Dh,C4h,C8h,72h,00h,08h,64h,1Eh,89h,F0h,86h,62h,59h,AFh,46h,0Ch,01h,5Dh,00h,56h,4Fh,71h,EDh,29h,35h,99h,3Ah,53h,9Ch,0Fh,9Ah,A6h,B0h,78h,60h,08h,D8h,02h,33h,51h,45h,94h,F4h,3Ch,DDh,31h,F5h,85h,00h,5Ah,25h,C3h,43h,00h,47h,40h,11h,94h,EAh,64h,9Eh,87h,E0h,CAh,80h,1Dh,32h,0Dh,29h,71h,C9h,5Ch,AAh,38h,03h,93h,AFh,13h,1Fh,94h,F9h,E0h,49h,9Ah,77h,54h,60h
+.endif
+INPUT_END:
