@@ -28,5 +28,6 @@
 .deflong memcpy(src, dest, len)
     ld hl,src
     ld de,dest
+    ld bc,len
     ldir
 .enddeflong
