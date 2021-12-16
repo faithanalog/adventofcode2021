@@ -101,9 +101,6 @@ Main:
     ld a,05h
     out (05h),a
 
-    ld a,0
-    ld (iteration),a
-
     ; step 10 times
     ld b,10
     -:
@@ -325,7 +322,6 @@ addSubProducts:
 
 ; Fill in the insertion LUT from the mapping
 ; Starts on the previous page, swaps to new page for writes. ends on new page
-.var 1,iteration
 polymerizeAllPairs:
     ld ix,MAPPING_START
     ld b,(MAPPING_END - MAPPING_START) / 3
@@ -341,32 +337,21 @@ polymerizeAllPairs:
         call getIDForLetter
         ld e,a
 
-        nop
         .echoln $
 
         push de
-        call memoTableIndex
         ld de,newMemoEntry
         ld b,64
-        ld a,0
+        xor a
         --:
             ld (de),a
             inc de
             djnz {--}
-        pop de
 
-        push de
         ld a,(ix + 2)
         call getIDForLetter
         push af
-        
-        ; hack
-        ;ld hl,iteration
-        ;dec (hl)
-        ;inc (hl)
         call incrementProduct
-        ; hack
-
         pop af
         pop de
         
@@ -409,9 +394,6 @@ polymerizeAllPairs:
     xor 1
     ld (activePage),a
     out (05h),a
-
-    ld hl,iteration
-    inc (hl)
     ret
 
 ; sumPairs
@@ -490,7 +472,6 @@ polymerizeTemplate:
     ld ix,TEMPLATE_START
     ld b,(TEMPLATE_END - TEMPLATE_START) - 1
     -:
-        nop
         push bc
 
         ld a,(ix + 0)
@@ -504,8 +485,6 @@ polymerizeTemplate:
         call memoTableIndex
         ld de,COUNTERS
         
-        nop
-
         ; Add everything at the pair to the global counters
         ld b,10
         --:
