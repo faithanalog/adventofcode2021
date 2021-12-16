@@ -1,0 +1,32 @@
+.deflong memset(addr, length, value)
+    ld hl,addr
+    ld a,value
+    .if length > 256
+        .if (length & FFh) == 0
+            ld c,length >> 8
+            ld b,0
+        .else
+            ld c,(length >> 8) + 1
+            ld b,length & FFh
+        .endif
+        @:
+            @:
+                ld (hl),a
+                inc hl
+                djnz {-1@}
+            dec c
+            jr nz,{-2@}
+    .else
+        ld b,length
+        @:
+            ld (hl),a
+            inc hl
+            djnz {-1@}
+    .endif
+.enddeflong
+
+.deflong memcpy(src, dest, len)
+    ld hl,src
+    ld de,dest
+    ldir
+.enddeflong

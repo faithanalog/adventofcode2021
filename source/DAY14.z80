@@ -19,6 +19,9 @@ Description:
     .db "day 14",0
 
 .include "source/float.z80"
+.include "source/memory.z80"
+.include "source/control.z80"
+
 .varloc saferam2, 500
 Start:
 
@@ -76,63 +79,41 @@ Main:
 
 
     MEMO_TABLE = C000h
-    COUNTERS = F800h
+    COUNTERS = FE00h
     LETTER_MAPPING = 8000h ; appData
     LETTER_MAPPING_COUNT = LETTER_MAPPING + 31
-    
-    ; Zero letter mapping
-    xor a
-    ld b,32
-    ld hl,LETTER_MAPPING
-    -:
-        ld (hl),a
-        inc hl
-        djnz {-}
+
+
+    call allocateLetterIDs
+
 
     .var 1, activePage
     ld a,05h
     ld (activePage),a
 
-    ; Zero out the whole-ass ram page like i give a fuck
-    xor a
-    ld c,16384 >> 8
-    ld b,0
-    ld hl,C000h
-    --:
-        -:
-            ld (hl),a
-            inc hl
-            djnz {-}
-        dec c
-        jr nz,{--}
+    memset(MEMO_TABLE, 4000h, 0)
 
-    ; And the other one
     ld a,04h
     out (05h),a
-    xor a
-    ld c,16384 >> 8
-    ld b,0
-    ld hl,C000h
-    --:
-        -:
-            ld (hl),a
-            inc hl
-            djnz {-}
-        dec c
-        jr nz,{--}
+
+    memset(MEMO_TABLE, 4000h, 0)
 
     ld a,05h
     out (05h),a
 
-    call polymerizeAllPairs
-;    ld b,10
-;    -:
-;        push bc
-;        call polymerizeAllPairs
-;        pop bc
-;        djnz {-}
+    ld a,0
+    ld (iteration),a
 
-    ;call sumPairs
+    ; step 10 times
+    ld b,10
+    -:
+        push bc
+        call polymerizeAllPairs
+        pop bc
+        djnz {-}
+
+
+    call polymerizeTemplate
     call sortCounters
 
     ; Find the minimum counter that isnt 0
@@ -149,12 +130,46 @@ Main:
     ; IX = min. do subtraction
     ; IY = max
     .var 8,part1ans
-    ld iy,COUNTERS + 256 - 8
+    ld iy,COUNTERS + (16 * 8) - 8
     or a
     .for _byte,0,7
         ld a,(iy + _byte)
         sbc a,(ix + _byte)
         ld (part1ans + _byte),a
+    .loop
+
+    ; 30 more times for part 2
+    ld b,30
+    -:
+        push bc
+        call polymerizeAllPairs
+        pop bc
+        djnz {-}
+
+
+    call polymerizeTemplate
+    call sortCounters
+
+    ; Find the minimum counter that isnt 0
+    ld ix,COUNTERS - 8
+    ld de,8
+    -:
+        add ix,de
+        ld a,(ix)
+        .for _byte,1,7
+            or (ix + _byte)
+        .loop
+        jr z,{-}
+
+    ; IX = min. do subtraction
+    ; IY = max
+    .var 8,part2ans
+    ld iy,COUNTERS + (16 * 8) - 8
+    or a
+    .for _byte,0,7
+        ld a,(iy + _byte)
+        sbc a,(ix + _byte)
+        ld (part2ans + _byte),a
     .loop
 
 
@@ -176,7 +191,6 @@ Main:
     ld hl,bcdRam
     call DispBCD
 
-    .var 8, part2ans
     ld hl,part2ans
     call ConvertToBCD
     ld a,2
@@ -194,6 +208,30 @@ Main:
 .include "source/bcd.z80"
 
 
+
+; Allocate IDs for all letters
+allocateLetterIDs:
+    ; Init table to 255
+    memset(LETTER_MAPPING, 31, FFh)
+    xor a
+    ld (LETTER_MAPPING_COUNT),a
+    ld de,MAPPING_START
+    ld bc,MAPPING_END - MAPPING_START
+    -:
+        ld a,(de)
+        inc de
+        call getIDForLetter
+        cp FFh
+        jr nz,{+}
+            ld a,(LETTER_MAPPING_COUNT)
+            ld (hl),a
+            inc a
+            ld (LETTER_MAPPING_COUNT),a
+        +:
+        
+        djnzbc({-})
+
+
 ; Get an ID for a letter in a
 ; destroy HL
 getIDForLetter:
@@ -202,22 +240,21 @@ getIDForLetter:
     ld l,a
 
     ld a,(hl)
-    or a
-    ret nz
-
-    ld a,(LETTER_MAPPING_COUNT)
-    ld (hl),a
-    inc a
-    ld (LETTER_MAPPING_COUNT),a
-    dec a
     ret
-    
-
 
 
 ; D = Left
 ; E = Right
+; Table is 16 * 16 * 64 
+; 4 bit + 4 bits + 6 bits
 memoTableIndex:
+    ; shift E over 4 bits
+    sla e
+    sla e
+    sla e
+    sla e
+
+    ; Now move the top two bits of E into D
     ; shift over 2 bits
     sla e
     rl d
@@ -229,13 +266,70 @@ memoTableIndex:
     ret
 
 
+; Used to store the current memo entry counters
+.var 64, newMemoEntry
+
+; D - left
+; E - right
+; A - product
+incrementProduct:
+    add a,a ; 2x
+    ld e,a
+    add a,a ; 4x
+    add a,e ; 2x + 4x = 6x
+
+    ld d,0
+    ld e,a
+    ld hl,newMemoEntry
+    add hl,de
+
+    ; Inc the counter
+    ld a,(hl)
+    add a,1
+    ld (hl),a
+    .repeat 5
+        inc hl
+        ld a,(hl)
+        adc a,0
+        ld (hl),a
+    .loop
+    ret
+
+; Add sub-products of a pairing to newMemoEntry
+; D - left
+; E - right
+addSubProducts:
+    call memoTableIndex
+    ld de,newMemoEntry
+
+    ld b,10
+    -:
+        ; Add one pair to newMemoEntry
+        ld a,(de)
+        add a,(hl)
+        ld (de),a
+        inc de
+        inc hl
+        .repeat 5
+            ld a,(de)
+            adc a,(hl)
+            ld (de),a
+            inc de
+            inc hl
+        .loop
+        djnz {-}
+    ret
+    
+    
+
+
 ; Fill in the insertion LUT from the mapping
 ; Starts on the previous page, swaps to new page for writes. ends on new page
+.var 1,iteration
 polymerizeAllPairs:
     ld ix,MAPPING_START
     ld b,(MAPPING_END - MAPPING_START) / 3
 
-    .var 64, newMemoEntry
     -:
         push bc
 
@@ -247,112 +341,53 @@ polymerizeAllPairs:
         call getIDForLetter
         ld e,a
 
-        push de ; save inputs for later use
+        nop
+        .echoln $
 
+        push de
         call memoTableIndex
-        
-
-        ; copy the memo table into working memory
-        push hl
         ld de,newMemoEntry
-        ld bc,64
-        ldir
+        ld b,64
+        ld a,0
+        --:
+            ld (de),a
+            inc de
+            djnz {--}
+        pop de
 
-
+        push de
         ld a,(ix + 2)
         call getIDForLetter
-        pop hl ; restore memo table
-
-        ; save the result product
         push af
-
-        ; Now mult this time 6 to get to the right 6-bit number
-        add a,a ; 2x
-        ld c,a
-        add a,a ; 4x
-        add a,c ; 2x + 4x = 6x
-
-        ld d,0
-        ld e,a
-        add hl,de
-        ex de,hl ; DE = current memo table, HL = offset
-
-        ld bc,newMemoEntry
-        add hl,bc
-
-        ; Inc the counter
-        ld a,(de)
-        add a,1
-        ld (hl),a
-        .repeat 5
-            inc de
-            inc hl
-            ld a,(de)
-            adc a,0
-            ld (hl),a
-        .loop
-
         
-        ; Now add the sums from the other ones
-        pop af ; A = middle
-        pop de ; DE = L/R
-        push de
-        push af
+        ; hack
+        ;ld hl,iteration
+        ;dec (hl)
+        ;inc (hl)
+        call incrementProduct
+        ; hack
 
-        ; left
-        ld e,a
-        call memoTableIndex
-        ld de,newMemoEntry
-
-        ; add all 10 values
-        ld b,10
-        -:
-            ld a,(de)
-            add a,(hl)
-            ld (de),a
-            inc de
-            inc hl
-            .repeat 5
-                ld a,(de)
-                adc a,(hl)
-                ld (de),a
-                inc de
-                inc hl
-            .loop
-            djnz {-}
-
-        ; right
         pop af
         pop de
+        
+
         push de
-
-        ld d,a
-        call memoTableIndex
-        ld de,newMemoEntry
-
-        ; add all 10 values
-        ld b,10
-        -:
-            ld a,(de)
-            add a,(hl)
-            ld (de),a
-            inc de
-            inc hl
-            .repeat 5
-                ld a,(de)
-                adc a,(hl)
-                ld (de),a
-                inc de
-                inc hl
-            .loop
-            djnz {-}
-
-
+        push af
+        ld e,a
+        call addSubProducts
+        pop af
         pop de
+
+        push de
+        ld d,a
+        call addSubProducts
+        pop de
+
+
         call memoTableIndex
         ex de,hl
         ld hl,newMemoEntry
-        ld bc,64
+        ld bc,60
 
         ; switch to new table
         ld a,(activePage)
@@ -363,19 +398,20 @@ polymerizeAllPairs:
         out (05h),a
 
 
-        pop bc
         ld de,3
         add ix,de
-        dec b
-        jp nz,{-}
 
-    +++:
+        pop bc
+        djnz {-}
 
     ; swap active pages
     ld a,(activePage)
     xor 1
-    out (05h),a
     ld (activePage),a
+    out (05h),a
+
+    ld hl,iteration
+    inc (hl)
     ret
 
 ; sumPairs
@@ -401,7 +437,7 @@ sumPairs:
             .loop
 
             ; advance to next entry
-            ld de,57
+            ld de,64 - 5
             add hl,de
 
             ; restore counter pointer
@@ -410,7 +446,7 @@ sumPairs:
         pop hl
 
         ld a,l
-        add a,64
+        add a,6
         ld l,a
         ld a,h
         adc a,0
@@ -428,114 +464,71 @@ sumPairs:
     ret
 
 
-
-; Polymerize a pair of values recursively
-; b = remaining depth. If 1, adds mapping result to counter. otherwise,
-; recursively map
-; D = left molecule
-; E = right molecule
-polymerizePair:
-    push de ; store the molecule pair
-    
-    ; generate index into LUT
-    xor a
-    rr d
-    rra
-    rr d
-    rra
-    rr d
-    rra
-    or e
-    ld e,a
-    ;ld hl,INSERT_LUT
-    add hl,de
-
-    ; Add the newly generated element to counter
-    ; This one is easier, just val << 3
-    ld a,(hl)
-    ld c,a ; store the middle molecule in c
-    rla ; add cleared the carry
-    rla
-    rla
-
-    ld h,COUNTERS >> 8
-    ld l,a
-
-    ; 64-bit increment is pain
-    ld a,(hl)
-    add a,1
-    ld (hl),a
-    inc hl
-    .repeat 7
-        ld a,(hl)
-        adc a,0
-        ld (hl),a
-        inc hl
-    .loop
-
-
-    ; restore the molecule inputs.
-    ; at this point, the middle molecule is in c
-    pop de
-    
-    ; What do we do now?
-    dec b
-    ret z ; b is zero, so just return. DONE!
-
-    ; b is, non-zero, need to recurse
-    push de
-    push bc
-    
-    ; Left side
-    ld e,c
-    call polymerizePair
-
-    ; Right side
-    pop bc
-    pop de
-    ld d,c
-    jp polymerizePair
-
 ; To polymerize the template we iterate over the thing and
 ; polymerize the pairs, but need to translate them first
 ; b = number of steps to polymerize (needed for part1 vs part2)
 polymerizeTemplate:
-    ; self modifying code lol, cant help ourselves
-    ld a,b
-    ld (_numberOfStepsToPolymerize + 1),a
+    memset(COUNTERS, 8 * 16, 0)
 
-    ; First, initialize the counters with the template itself.
-    ; Don't need 64 bit math here since theyre 0 already
+    ; Initialize counters to the template sequence
     ld ix,TEMPLATE_START
     ld b,TEMPLATE_END - TEMPLATE_START
     -:
         ld a,(ix)
-        sub 'A'
-        rla
-        rla
-        rla
+        call getIDForLetter
+        add a,a
+        add a,a
+        add a,a
         ld h,COUNTERS >> 8
         ld l,a
         inc (hl)
         inc ix
         djnz {-}
 
-
-    ; Do polymerization
+    ; Given pairs polymerized to a step, add the counters for
+    ; each pair in the template sequence to COUNTERS
     ld ix,TEMPLATE_START
-    ld b,TEMPLATE_END - TEMPLATE_START - 1
+    ld b,(TEMPLATE_END - TEMPLATE_START) - 1
     -:
+        nop
         push bc
 
-        ld a,(ix)
-        sub 'A'
+        ld a,(ix + 0)
+        call getIDForLetter
         ld d,a
+
         ld a,(ix + 1)
-        sub 'A'
+        call getIDForLetter
         ld e,a
-        _numberOfStepsToPolymerize:
-        ld b,10 ; number of steps
-        call polymerizePair
+
+        call memoTableIndex
+        ld de,COUNTERS
+        
+        nop
+
+        ; Add everything at the pair to the global counters
+        ld b,10
+        --:
+            ld a,(de)
+            add a,(hl)
+            ld (de),a
+            inc de
+            inc hl
+            .repeat 5
+                ld a,(de)
+                adc a,(hl)
+                ld (de),a
+                inc de
+                inc hl
+            .loop
+            ; final counters are 8 bit
+            .repeat 2
+                ld a,(de)
+                adc a,0
+                ld (de),a
+                inc de
+            .loop
+            djnz {--}
 
         inc ix
         pop bc
@@ -548,7 +541,7 @@ sortCounters:
     ld ix,COUNTERS + 8h
 
     ; for(size_t i = n - 1; i > 0; --i) {
-    ld b,10 - 1
+    ld b,16 - 1
     -:
         ; int tmp = a[n - i];
         .var 8, sort_tmp
@@ -560,7 +553,7 @@ sortCounters:
         ; size_t j = n - i;
         push ix
         pop iy
-        ld a,10
+        ld a,16
         sub b
         ld c,a
 
@@ -606,7 +599,7 @@ sortCounters:
 
 
 INPUT:
-.define DEBUG
+;.define DEBUG
 .ifdef DEBUG
 
 TEMPLATE_START:
