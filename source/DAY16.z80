@@ -202,11 +202,7 @@ traversePacket:
 
     _packetLiteral:
         ; zero packet value
-        ld hl,0
-        .for _byte,0,6,2
-            ld (packetValue + _byte),hl
-        .loop
-
+        memset(packetValue, 8, 0)
 
         ; literal bits are packet in groups of 5 until the group leads with 0
         -:
@@ -240,15 +236,14 @@ traversePacket:
         push hl
         push hl
 
-        ; Oh yeah also we need the operator function itself. SMC is simplest here
+        ; Oh yeah also we need the operator function itself
         add a,a
-        ld h,PACKET_OP_TABLE
+        ld h,PACKET_OP_TABLE >> 8
         ld l,a
         ld e,(hl)
         inc hl
         ld d,(hl)
-        ld (_doOpCallType0 + 1),de
-        ld (_doOpCallType1 + 1),de
+        push de
 
 
         ; length type
@@ -260,37 +255,48 @@ traversePacket:
             ; next 15 bits are length in bits if sub-packets
             ld b,15
             call consumeBitsDE
-            
-            ; check not zero
-            ld a,d
-            or e
-            ret z
 
             ; mark end bit
             ld hl,(bitsConsumed)
             add hl,de
             push hl
 
+            ; Traverse one packet, store as initial stack var
+            call traversePacket
+            ld hl,4
+            add hl,sp
+            ex de,hl
+            ld hl,packetValue
+            ld bc,8
+            ldir
+
             ; read sub-packets until all bits consumed
             -:
-                call traversePacket
-                
-                ; Get the tmp var
-                ld hl,2
-                add hl,sp
-                ex de,hl
-                ld hl,packetValue
-
-                ; Do the operation, stores in DE
-                _doOpCallType0:
-                call $0000
-
                 ld de,(bitsConsumed)
                 pop hl
                 push hl
                 or a
                 sbc hl,de
-                jr nz,{-}
+                jr z,{+}
+
+                call traversePacket
+
+                ; Get the operation into bc
+                ld hl,2
+                add hl,sp
+                ld c,(hl)
+                inc hl
+                ld b,(hl)
+                inc hl
+                
+                ; Get the tmp var
+                ; hl = sp + 4 from getting operation
+                ex de,hl
+                ld hl,packetValue
+
+                call callPacketOp
+                jr {-}
+            +:
 
             pop hl
             jr _packetOpDone
@@ -300,45 +306,74 @@ traversePacket:
             ld b,11
             call consumeBitsDE
 
-            ; check not zero
-            ld a,d
-            or e
-            ret z
+            push de ; save packet count
+
+            ; Traverse one packet, store as initial stack var
+            call traversePacket
+            ld hl,4
+            add hl,sp
+            ex de,hl
+            ld hl,packetValue
+            ld bc,8
+            ldir
 
             -:
+                pop de
+                dec de
                 push de
+                ld a,d
+                or e
+                jr z,{+}
+
                 call traversePacket
 
-                ; Get the tmp var
+                ; Get the operation into bc
                 ld hl,2
                 add hl,sp
+                ld c,(hl)
+                inc hl
+                ld b,(hl)
+                inc hl
+
+                ; Get the tmp var
+                ; hl = sp + 4 from getting operation addr
                 ex de,hl
                 ld hl,packetValue
 
-                ; Do the operation, stores in DE
-                _doOpCallType1:
-                call $0000
+                call callPacketOp
 
-                pop de
-                dec de
-                ld a,d
-                or e
-                jr nz,{-}
+                jr {-}
+            +:
+            
+            pop de ; remove counter from stack
             jr _packetOpDone
 
         _packetOpDone:
+        ; de-allocate operator ptr
+        pop hl
         ; De-allocate return value and copy over
-        .for _byte,0,6,2
-            pop hl
-            ld (packetValue + _byte),hl
-        .loop
-        ret
+        pop hl
+        ld (packetValue + 0),hl
+        pop hl
+        ld (packetValue + 2),hl
+        pop hl
+        ld (packetValue + 4),hl
+        pop hl
+        ld (packetValue + 6),hl
     ret
 
 
 
 
+; Given DE/HL are operands and BC is packet op, jump into it
+callPacketOp:
+    push bc
+    ret
+    
+    
 
+
+; Table of packet functions and their base value
 .align 256
 PACKET_OP_TABLE:
 .dw packetSum
@@ -369,43 +404,31 @@ packetSum:
 ; DE = DE * HL
 packetProduct:
     push de
-    ld bc,reg64a
-    ld a,(de)
-    ld (bc),a
-    .repeat 7
-        inc de
-        inc bc
-        ld a,(de)
-        ld (bc),a
-    .loop
 
-    ld bc,reg64b
-    ld a,(hl)
-    ld (bc),a
-    .repeat 7
-        inc hl
-        inc bc
-        ld a,(hl)
-        ld (bc),a
-    .loop
+    ; HL -> reg64a
+    ld de,reg64a
+    ld bc,8
+    ldir
+
+    ; DE -> reg64b
+    pop hl
+    push hl
+    ld de,reg64b
+    ld bc,8
+    ldir
 
     call mul64AB
 
-    pop bc
-    ld de,reg64c
-    ld a,(de)
-    ld (bc),a
-    .repeat 7
-        inc de
-        inc bc
-        ld a,(de)
-        ld (bc),a
-    .loop
+    ; reg64c -> DE
+    ld hl,reg64c
+    pop de
+    ld bc,8
+    ldir
     ret
 
 ; DE = min(DE, HL)
 packetMinimum:
-    ; if DE - HL generates carry, DE <= HL
+    ; if DE - HL generates carry, DE < HL
     ld a,(de)
     sub (hl)
     .repeat 7
@@ -417,7 +440,7 @@ packetMinimum:
 
     ret c ; carry, do nothing
 
-    ; If no carry, HL< DE. replace
+    ; If no carry, HL <= DE. replace
     ld a,(hl)
     ld (de),a
     .repeat 7
@@ -430,7 +453,7 @@ packetMinimum:
 
 ; DE = max(DE,HL)
 packetMaximum:
-    ; if DE - HL generates carry, DE <= HL
+    ; if DE - HL generates carry, DE < HL
     ld a,(de)
     sub (hl)
     .repeat 7
@@ -442,7 +465,7 @@ packetMaximum:
 
     ret nc ; no carry, do nothing
 
-    ; If carry, HL >= DE. replace
+    ; If carry, HL > DE. replace
     ld a,(hl)
     ld (de),a
     .repeat 7
@@ -455,7 +478,11 @@ packetMaximum:
 
 ; DE = DE > HL
 packetGreaterThan:
-    ; if DE - HL generates carry, DE <= HL
+    ; swap DE/HL
+    ex de,hl
+
+    ; if DE - HL generates carry, DE < HL. no carry, HL >= DE
+    ; since they are swapped, carry means that DE > HL
     ld a,(de)
     sub (hl)
     .repeat 7
@@ -464,6 +491,9 @@ packetGreaterThan:
         ld a,(de)
         sbc a,(hl)
     .loop
+    push af
+
+    ex de,hl
 
     ; zero top 7 bytes
     ld a,0
@@ -472,7 +502,9 @@ packetGreaterThan:
         dec de
     .loop
     ld (de),a ; zero byte0
-    ret c ; carry is less than / eq
+
+    pop af
+    ret nc ; no carry is less than / eq
 
     ld a,1    ; set byte0 to 1
     ld (de),a
@@ -480,11 +512,7 @@ packetGreaterThan:
 
 ; DE = DE < HL
 packetLessThan:
-    ; swap DE/HL
-    ex de,hl
-
-    ; if DE - HL generates carry, DE <= HL
-    ; but they are swapped, so carry here means HL <= DE, so DE > HL
+    ; if DE - HL generates carry, DE < HL
     ld a,(de)
     sub (hl)
     .repeat 7
@@ -493,9 +521,7 @@ packetLessThan:
         ld a,(de)
         sbc a,(hl)
     .loop
-
-    ; swap DE/HL
-    ex de,hl
+    push af
 
     ; zero top 7 bytes
     ld a,0
@@ -504,7 +530,9 @@ packetLessThan:
         dec de
     .loop
     ld (de),a ; zero byte0
-    ret c ; carry is geq
+
+    pop af
+    ret nc ; no-carry is geq
 
     ld a,1    ; set byte0 to 1
     ld (de),a
@@ -519,6 +547,7 @@ packetEqual:
         ld a,(de)
         sbc a,(hl)
     .loop
+    push af
 
     ; zero top 7 bytes
     ld a,0
@@ -527,6 +556,8 @@ packetEqual:
         dec de
     .loop
     ld (de),a ; zero byte0
+
+    pop af
     ret nz ; nz = not equal
 
     ld a,1    ; set byte0 to 1
@@ -542,19 +573,19 @@ packetEqual:
 .var 8, reg64c
 
 sr64A:
-    ld hl,reg64a
+    ld hl,reg64a + 7
     srl (hl)
     .repeat 7
-        inc hl
+        dec hl
         rr (hl)
     .loop
     ret
 
 sl64B:
-    ld hl,reg64b + 7
+    ld hl,reg64b
     sla (hl)
     .repeat 7
-        dec hl
+        inc hl
         rl (hl)
     .loop
     ret
@@ -578,10 +609,7 @@ add64CB:
     ret
 
 ClearRegC:
-    ld hl,0
-    .for _byte,0,6,2
-        ld (reg64c + _byte),hl
-    .loop
+    memset(reg64c, 8, 0)
     ret
     
 
@@ -604,14 +632,40 @@ mul64NoAdd:
 
 
 INPUT:
-.define DEBUG
+;.define DEBUG
 .ifdef DEBUG
 ;.db D2h,FEh,28h
 ;.db 8Ah,00h,4Ah,80h,1Ah,80h,02h,F4h,78
 ;.db 62h,00h,80h,00h,16h,11h,56h,2Ch,88h,02h,11h,8Eh,34h
+
+; sum
+;.db C2h,00h,B4h,0Ah,82h,
+
+; mult
 ;.db 04h,00h,5Ah,C3h,38h,90h
+
+; min
+;.db 88h,00h,86h,C3h,E8h,81h,12h
+
+; max
+;.db CEh,00h,C4h,3Dh,88h,11h,20h
+
+; lt
+;.db D8h,00h,5Ah,C2h,A8h,F0h
+
+; gt
+;.db F6h,00h,BCh,2Dh,8Fh
+
+
+; eq
+;.db 9Ch,00h,5Ah,C2h,F8h,F0h
+
+; nested op
+.db 9Ch,01h,41h,08h,02h,50h,32h,0Fh,18h,02h,10h,4Ah,08h
+
 .else
 .db E0h,52h,5Dh,98h,02h,FAh,00h,B8h,00h,21h,B1h,3Eh,2Dh,42h,60h,00h,43h,21h,DCh,64h,8Dh,72h,9Dh,D6h,7Bh,24h,12h,00h,99h,66h,D7h,6Ch,01h,59h,EDh,27h,4Fh,69h,21h,40h,2Eh,9Fh,D4h,ACh,1Bh,0Fh,65h,2Ch,D3h,39h,D7h,B8h,22h,40h,08h,3Ch,9Ah,54h,E8h,19h,80h,2Bh,36h,9Dh,C0h,08h,2Ch,F9h,0Ch,F9h,28h,00h,81h,72h,7Dh,AFh,41h,E6h,A5h,C1h,B9h,B8h,E4h,1Ah,4Fh,31h,A4h,EFh,67h,E2h,00h,98h,34h,01h,59h,86h,F9h,ABh,E4h,1Eh,7Dh,60h,80h,21h,39h,31h,CBh,00h,42h,70h,DEh,5Dh,D4h,C0h,10h,E0h,0Dh,50h,40h,1Bh,8Ah,70h,8Eh,3Fh,80h,02h,1Fh,0Bh,E0h,A4h,3Dh,9Eh,46h,00h,07h,E6h,2Ah,CEh,E7h,F9h,FBh,44h,91h,BCh,22h,60h,09h,0Ah,57h,3Ah,87h,6Bh,1Bh,C4h,D6h,79h,BAh,7Ah,64h,24h,01h,43h,49h,37h,C9h,11h,CDh,98h,49h,10h,49h,0Ch,CFh,C2h,7Ch,C7h,EEh,68h,60h,09h,CFh,C5h,7Eh,C0h,14h,9Ch,EFh,E4h,D1h,35h,A0h,C2h,00h,C0h,F4h,01h,29h,8Bh,CFh,26h,53h,77h,F7h,9Ch,27h,9Fh,54h,02h,79h,ACh,CEh,5Ah,82h,0Ch,B0h,44h,B6h,22h,99h,29h,1Ch,01h,98h,02h,54h,01h,AAh,00h,02h,1Dh,18h,22h,BCh,5Ch,10h,07h,63h,A4h,69h,8Fh,B3h,50h,E6h,18h,4Ch,00h,A9h,82h,02h,00h,FAh,F0h,02h,44h,99h,8Fh,67h,D5h,99h,98h,F6h,7Dh,5Ah,93h,ECh,B0h,D6h,E0h,16h,4Dh,70h,9Ah,47h,F5h,AEh,B6h,61h,2Dh,1Bh,1Ah,C7h,88h,84h,60h,08h,78h,02h,52h,55h,50h,97h,F5h,1Fh,26h,3Ah,1Ch,A0h,0Ch,4Dh,09h,46h,B9h,26h,69h,EEh,47h,31h,50h,60h,08h,12h,06h,C9h,62h,08h,B0h,B2h,61h,0Eh,7Bh,38h,97h,37h,F3h,E2h,00h,6Dh,66h,C1h,A1h,D4h,ABh,ECh,3Eh,10h,03h,A3h,B0h,80h,5Dh,33h,7Ch,2Fh,4Fh,A5h,CDh,83h,CEh,7Dh,A6h,7Ah,30h,4Eh,9Bh,EEh,F3h,2Dh,CEh,F0h,8Ah,40h,00h,20h,B1h,96h,7Fh,C2h,66h,00h,84h,BCh,77h,BAh,C3h,F8h,47h,B0h,04h,E6h,CAh,26h,CAh,14h,00h,95h,00h,39h,00h,BAh,A3h,00h,21h,40h,08h,70h,03h,D4h,00h,80h,02h,2Eh,8Ch,00h,87h,00h,39h,40h,0Eh,10h,02h,D4h,00h,F1h,00h,38h,C0h,0Dh,10h,02h,18h,03h,8Fh,40h,0Bh,61h,00h,22h,95h,00h,22h,66h,99h,FEh,B9h,F9h,B0h,98h,02h,1Ah,00h,80h,00h,21h,50h,76h,27h,C3h,21h,00h,6Eh,24h,C5h,78h,4Bh,16h,0Ch,01h,4Ah,00h,54h,A6h,4Eh,64h,BBh,54h,59h,DEh,82h,18h,03h,32h,40h,93h,AEh,B3h,25h,46h,00h,B4h,BFh,75h,C5h,0Dh,00h,46h,56h,2Fh,72h,B1h,79h,30h,04h,66h,7Bh,6Eh,78h,EFh,C0h,13h,9Fh,D5h,34h,73h,34h,09h,23h,2Dh,77h,42h,E4h,02h,85h,08h,03h,F1h,FAh,31h,43h,D0h,00h,42h,22h,6Ch,4Ah,8Bh,80h,00h,84h,C5h,28h,FDh,15h,27h,E9h,8Dh,5Eh,B4h,5Ch,60h,03h,FEh,7Fh,7Fh,CBh,A0h,00h,A1h,E6h,00h,FCh,5Ah,83h,11h,F0h,80h,10h,98h,3Fh,0Bh,A0h,89h,00h,21h,F1h,B6h,1Ch,C4h,62h,01h,40h,ECh,01h,01h,00h,76h,2Dh,C4h,C8h,72h,00h,08h,64h,1Eh,89h,F0h,86h,62h,59h,AFh,46h,0Ch,01h,5Dh,00h,56h,4Fh,71h,EDh,29h,35h,99h,3Ah,53h,9Ch,0Fh,9Ah,A6h,B0h,78h,60h,08h,D8h,02h,33h,51h,45h,94h,F4h,3Ch,DDh,31h,F5h,85h,00h,5Ah,25h,C3h,43h,00h,47h,40h,11h,94h,EAh,64h,9Eh,87h,E0h,CAh,80h,1Dh,32h,0Dh,29h,71h,C9h,5Ch,AAh,38h,03h,93h,AFh,13h,1Fh,94h,F9h,E0h,49h,9Ah,77h,54h,60h
+
 .endif
 INPUT_END:
 
