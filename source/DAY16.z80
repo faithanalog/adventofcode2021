@@ -491,7 +491,6 @@ packetGreaterThan:
         ld a,(de)
         sbc a,(hl)
     .loop
-    push af
 
     ex de,hl
 
@@ -503,7 +502,6 @@ packetGreaterThan:
     .loop
     ld (de),a ; zero byte0
 
-    pop af
     ret nc ; no carry is less than / eq
 
     ld a,1    ; set byte0 to 1
@@ -521,7 +519,6 @@ packetLessThan:
         ld a,(de)
         sbc a,(hl)
     .loop
-    push af
 
     ; zero top 7 bytes
     ld a,0
@@ -531,7 +528,6 @@ packetLessThan:
     .loop
     ld (de),a ; zero byte0
 
-    pop af
     ret nc ; no-carry is geq
 
     ld a,1    ; set byte0 to 1
@@ -539,29 +535,30 @@ packetLessThan:
     ret
 
 packetEqual:
+    push de
+
     ld a,(de)
-    sub (hl)
+    cp (hl)
+    jr nz,{+} ; not equal
     .repeat 7
         inc de
         inc hl
         ld a,(de)
-        sbc a,(hl)
+        cp (hl)
+        jr nz,{+} ; not equal
     .loop
-    push af
-
-    ; zero top 7 bytes
+    +:
+    pop hl
     ld a,0
+    ld (hl),a
+    jr nz,{+}
+        ld (hl),1
+    +:
     .repeat 7
-        ld (de),a
-        dec de
+        inc hl
+        ld (hl),a
     .loop
-    ld (de),a ; zero byte0
-
-    pop af
-    ret nz ; nz = not equal
-
-    ld a,1    ; set byte0 to 1
-    ld (de),a
+    ret
     ret
 
     
@@ -571,6 +568,11 @@ packetEqual:
 .var 8, reg64a
 .var 8, reg64b
 .var 8, reg64c
+
+.echoln reg64a
+.echoln reg64b
+.echoln reg64c
+
 
 sr64A:
     ld hl,reg64a + 7
