@@ -1,0 +1,503 @@
+.nolist
+.global
+#include "ti83plus.inc"
+#include "dcs7.inc"
+.endglobal
+.variablename DAY18
+.list
+    .org progstart
+    .db $BB,$6D
+Init:
+    xor d
+    ret
+    jr Start
+    .dw Description
+    .db $07,$00
+    .dw $0000
+    .dw $0000
+Description:
+    .db "day 18",0
+
+.include "source/float.z80"
+.include "source/memory.z80"
+.include "source/control.z80"
+
+.varloc saferam2, 500
+Start:
+
+Main:
+    bcall(_ClrScrnFull)
+
+
+
+
+    di
+    ; while we're at it, might as well use iy
+    push iy
+    ; Map bank 5 @ C000h
+    ld a,05h
+    out (05h),a
+    ; 15MHz
+    ld a,1
+    out (20h),a
+
+    ; move the stack pointer
+    .var 2, old_stack
+    ld (old_stack),sp
+    ld sp,0000
+
+    call sumInputSnailNumbers
+
+    ld ix,C000h
+    call snailNumberMagnitude
+
+    .var 8,part1ans
+    ld bc,0
+    ld (part1ans),hl
+    ld (part1ans + 2),de
+    ld (part1ans + 4),bc
+    ld (part1ans + 6),bc
+
+    ; restore the world
+    ld sp,(old_stack)
+    ld a,00h
+    out (05h),a
+    ld a,0
+    out (20h),a
+    pop iy
+    ei
+
+
+
+    ld hl,part1ans
+    call ConvertToBCD
+    ld a,0
+    ld (curRow),a
+    ld (curCol),a
+    ld hl,bcdRam
+    call DispBCD
+
+;    ld hl,part2ans
+;    call ConvertToBCD
+;    ld a,2
+;    ld (curRow),a
+;    ld a,0
+;    ld (curCol),a
+;    ld hl,bcdRam
+;    call DispBCD
+
+    b_call(_GetKey)
+
+    ret
+
+.define BCD64BIT
+.include "source/bcd.z80"
+
+; ix = number
+snailNumberMagnitude:
+    ld a,(ix) \ inc ix
+    cp '['
+
+    ; mag is literal if not a pair
+    jr z,{+}
+        ld de,0
+        ld h,0
+        ld l,a
+        ret
+    +:
+
+    ; read l
+    call snailNumberMagnitude
+
+    ; mult DE:HL * 3
+    push de
+    push hl ; save the 1x
+
+    sla l
+    rl h
+    rl e
+    rl d
+
+    ; add the 1x
+    pop bc
+    add hl,bc
+
+    pop bc
+    ex de,hl
+    adc hl,bc
+    ex de,hl
+
+    ; save DE:HL
+    push de
+    push hl
+
+    ; read r
+    call snailNumberMagnitude
+
+    ; mult DE:HL * 2
+    sla l
+    rl h
+    rl e
+    rl d
+
+    ; Add left
+    pop bc
+    add hl,bc
+
+    pop bc
+    ex de,hl
+    adc hl,bc
+    ex de,hl
+
+    ; skip right bracket
+    inc ix
+    
+    ret
+
+
+
+
+
+    
+
+
+; sum input, final number in C000h
+sumInputSnailNumbers:
+    ld ix,INPUT
+
+    ; First number in pair
+    ld a,(ix)
+    cp FFh
+    jr nz,{+}
+
+    ld iy,C000h
+    call parseSnailNumber
+
+    -:
+        ld a,(ix)
+        cp FFh
+        jr nz,{+}
+
+        ld iy,C800h
+        call parseSnailNumber
+
+        push ix
+        ld ix,C000h
+        ld iy,C800h
+        ld hl,D000h
+        call addSnailNumbers
+
+        ld ix,D000h
+        ld iy,C000h
+        call reduceSnailNumber
+
+        ; IX points to output, which it is, copy to C000h if its wrong
+        push ix
+        pop hl
+        ld de,C000h
+        or a
+        sbc hl,de
+        jr z,{+}
+            ld hl,D000h
+            ld bc,800h
+            ld de,C000h
+            ldir
+        +:
+        pop ix
+        jr {-}
+    ret
+
+
+; ix = left
+; iy = right
+; hl = out
+addSnailNumbers:
+    ld (hl),'[' \ inc hl
+    -:
+        ld a,(ix) \ inc ix
+        cp FFh
+        jr nz,{+}
+        ld (hl),a \ inc hl
+        jr {-}
+    +:
+    -:
+        ld a,(iy) \ inc iy
+        cp FFh
+        jr nz,{+}
+        ld (hl),a \ inc hl
+        jr {-}
+    +:
+    ld (hl),']' \ inc hl
+    ld (hl),FFh
+    ret
+
+; ix = input
+; iy = output
+.var 1,pairDepth
+reduceSnailNumber:
+    _reductionCycle:
+        push ix
+        push iy
+        call _reductionStep
+        pop ix ; swap ix/iy
+        pop iy
+        jr nz,_reductionCycle
+    ret
+
+    ; One reduction step, return z if a reduction happened else nz
+    _reductionStep:
+        ; how far are we into the string
+        ld b,0
+        ld a,0
+        ld (pairDepth),a
+        _reductionScan:
+            inc b
+
+            ld a,(ix)
+            cp $FF
+            jr nz,_reductionEOL
+
+            ld hl,pairDepth
+
+            cp '['
+            jr nz,{+}
+                ld a,3
+                cp (hl) ; depth >= 4
+                jp c,_explodeSnailNumber
+
+                inc (hl)
+                ld (iy),a
+                inc ix
+                inc iy
+                jr _reductionScan
+            +:
+
+            cp ']'
+            jr nz,{+}
+                dec (hl)
+                ld (iy),a
+                inc ix
+                inc iy
+                jr _reductionScan
+            +:
+
+
+            ld a,9
+            cp (ix) ; ix > 9
+            jp c,_splitSnailNumber
+
+            ld a,(ix)
+            ld (iy),a
+            inc ix
+            inc iy
+            jr _reductionScan
+        _reductionEOL:
+        ld (iy),a
+        xor a
+        inc a
+        ret
+
+    _explodeSnailNumber:
+        ; if we're on a digit and the depth is >=5 then we need to explode
+        ; first, look-back in the destination to add to the leftmost number
+        push bc
+        push iy
+        _explodeIntoLeft:
+            ld a,(iy)
+            ; If it's less than ']' we can assume thats a digit
+            cp ']' - 1
+            jr nc,{+}
+                add a,(ix + 1)
+                ld (iy),a
+                jr _explodeIntoLeftDone
+            +:
+            dec iy
+            djnz _explodeIntoLeft
+        _explodeIntoLeftDone:
+        pop iy
+        pop bc
+
+        ; This pair gets replaced with a 0
+        ld (iy),0
+
+        ; Get the right half
+        ld c,(ix + 2)
+
+        ; skip past the pair in the input
+        ld de,4
+        add ix,de 
+
+        ; Copy the right stuff over, adding the right half on the first normal number
+        _explodeIntoRight:
+            ld a,(ix)
+            cp ']' - 1
+            jr nc,{+}
+                add a,c
+                ld c,0
+            +:
+            ld (iy),a
+            inc ix
+            inc iy
+            cp FFh
+            jr nz,_explodeIntoRight
+        _explodeIntoRightDone:
+        xor a
+        ret
+
+    _splitSnailNumber:
+        ; replace the number with a pair of [n / 2, (n + 1) / 2]
+        ld a,(ix)
+        ld c,a
+        inc c
+        srl c ; right
+        srl a ; left
+
+
+        ld (iy),'['
+        ld (iy + 1),a
+        ld (iy + 2),c
+        ld (iy + 3),']'
+        
+        inc ix
+        ld de,4
+        add iy,de
+
+        ; copy the rest of the stuff
+        -:
+            ld a,(ix)
+            ld (iy),a
+            inc ix
+            inc iy
+            cp FFh
+            jr nz,{-}
+        xor a
+        ret
+
+
+; ix = input string
+; iy = output dest
+; convert text number by turning the ascii digits into numeric
+; also get rid of the commas
+parseSnailNumber:
+    -:
+        ld a,(ix) \ inc ix
+        cp ','
+        jr z,{+}
+            ld (iy),a
+            inc iy
+        +:
+        cp FFh
+        jr nz,{-}
+    ret
+
+
+
+
+
+INPUT:
+;.define DEBUG
+.ifdef DEBUG
+.else
+.db "[[[3,9],[7,2]],[[8,4],[[5,6],0]]]",FFh
+.db "[[[1,[4,9]],[[1,8],[1,5]]],[[[2,6],[6,7]],[[4,6],[9,0]]]]",FFh
+.db "[[[[9,2],1],[[0,7],[9,6]]],[[5,9],[7,[6,9]]]]",FFh
+.db "[8,9]",FFh
+.db "[[4,[6,1]],[2,[[6,7],2]]]",FFh
+.db "[[6,[[4,1],5]],[4,9]]",FFh
+.db "[[[0,6],[8,[8,5]]],[6,9]]",FFh
+.db "[[0,[1,0]],[[8,[7,4]],[[1,1],[5,0]]]]",FFh
+.db "[[[1,[0,1]],6],[1,9]]",FFh
+.db "[[2,[[9,0],[6,1]]],[[8,4],[5,7]]]",FFh
+.db "[[[[5,3],[0,9]],[1,[0,7]]],[[9,0],[2,[2,0]]]]",FFh
+.db "[[2,[2,[6,8]]],[[9,[5,4]],[4,[3,4]]]]",FFh
+.db "[[[[4,0],[7,0]],[[4,8],[5,8]]],[[[7,2],[2,2]],[[3,3],3]]]",FFh
+.db "[[5,0],5]",FFh
+.db "[[8,[[5,0],2]],[6,[5,1]]]",FFh
+.db "[[[9,[8,8]],[8,7]],[[[4,2],4],[[5,1],[4,8]]]]",FFh
+.db "[[[[1,1],3],5],9]",FFh
+.db "[[[[1,7],[6,5]],5],[[0,6],0]]",FFh
+.db "[[9,6],2]",FFh
+.db "[[[2,[0,8]],[8,[2,1]]],5]",FFh
+.db "[[[9,[3,7]],3],[0,[5,9]]]",FFh
+.db "[[[2,[1,7]],6],[[7,[8,2]],[[8,2],8]]]",FFh
+.db "[[[[1,2],1],5],2]",FFh
+.db "[4,[8,[3,9]]]",FFh
+.db "[[[[8,9],[6,0]],[[1,6],7]],8]",FFh
+.db "[[2,[8,1]],3]",FFh
+.db "[[2,2],[[8,[0,2]],[[5,0],5]]]",FFh
+.db "[9,[2,[[6,1],[8,9]]]]",FFh
+.db "[[4,[[6,6],4]],[[[9,3],[3,1]],5]]",FFh
+.db "[[[7,8],1],0]",FFh
+.db "[[[8,8],[[1,0],7]],[4,6]]",FFh
+.db "[9,8]",FFh
+.db "[[[[4,2],9],[[9,9],7]],[7,[9,[5,8]]]]",FFh
+.db "[[4,[4,[3,3]]],8]",FFh
+.db "[0,2]",FFh
+.db "[[4,[5,5]],[9,[[6,9],4]]]",FFh
+.db "[[[7,3],[[1,2],6]],[[[2,4],[6,7]],[[5,0],9]]]",FFh
+.db "[[[[2,0],5],[4,5]],[[[6,5],[6,0]],[1,[3,4]]]]",FFh
+.db "[[3,[6,8]],[[[3,0],0],[[2,8],7]]]",FFh
+.db "[[[4,[6,2]],[9,[4,1]]],[8,[3,4]]]",FFh
+.db "[[[6,[6,8]],[7,[2,0]]],[4,[[8,7],[1,6]]]]",FFh
+.db "[2,[0,[4,0]]]",FFh
+.db "[[[[0,5],1],8],[[9,[0,3]],3]]",FFh
+.db "[[[3,[5,2]],[3,[3,2]]],[[[7,3],1],7]]",FFh
+.db "[1,[[[1,8],[1,7]],0]]",FFh
+.db "[[8,6],[[0,4],4]]",FFh
+.db "[[[8,2],[4,6]],3]",FFh
+.db "[5,[[[7,5],[4,5]],[0,2]]]",FFh
+.db "[[3,[3,6]],6]",FFh
+.db "[[[[6,8],[5,7]],[[7,3],5]],[[8,[4,8]],8]]",FFh
+.db "[[[[5,8],[3,1]],[[3,7],[7,0]]],[[9,7],0]]",FFh
+.db "[[2,[[5,3],8]],0]",FFh
+.db "[0,[2,8]]",FFh
+.db "[[8,9],[[[2,2],[4,7]],[[4,0],1]]]",FFh
+.db "[[[[3,0],8],[[7,3],[6,1]]],[[3,8],[4,2]]]",FFh
+.db "[[[[6,7],[4,3]],[[3,9],5]],8]",FFh
+.db "[[[7,7],[[3,4],7]],[[[0,4],1],9]]",FFh
+.db "[[[7,5],5],[[2,[9,9]],[0,[3,5]]]]",FFh
+.db "[[[[3,3],[6,1]],[5,8]],[[4,7],[8,1]]]",FFh
+.db "[[[0,[7,3]],[6,[7,2]]],[[0,8],7]]",FFh
+.db "[[[2,7],[9,7]],[8,[3,8]]]",FFh
+.db "[[[0,2],6],[[9,[6,5]],[[3,9],1]]]",FFh
+.db "[[7,[[3,4],[2,8]]],[[[4,1],4],7]]",FFh
+.db "[[3,[[3,4],6]],[[3,9],[[4,5],[3,0]]]]",FFh
+.db "[[[5,[5,1]],[2,4]],[1,[[1,6],6]]]",FFh
+.db "[[[5,6],[[1,3],[5,0]]],[[[4,1],8],[5,5]]]",FFh
+.db "[[[[2,0],7],[[8,9],1]],[[[4,0],[1,6]],1]]",FFh
+.db "[[[2,0],[[4,2],[9,9]]],[4,9]]",FFh
+.db "[[[[1,9],6],2],[[5,4],[2,4]]]",FFh
+.db "[[[[4,1],[4,5]],[[2,3],2]],[3,[[8,8],1]]]",FFh
+.db "[[[[8,1],0],[2,2]],[[2,[7,1]],1]]",FFh
+.db "[[[7,4],[[1,3],5]],[[6,8],[[0,0],2]]]",FFh
+.db "[[[1,2],8],[[[1,7],[4,0]],[[8,2],8]]]",FFh
+.db "[[[0,8],[3,6]],[[[5,3],7],[9,7]]]",FFh
+.db "[[4,6],[[[7,9],[7,5]],[[4,6],[8,4]]]]",FFh
+.db "[[[[7,3],0],[[6,2],[7,2]]],[9,[[8,0],3]]]",FFh
+.db "[[[3,0],1],[[2,3],1]]",FFh
+.db "[[[5,[8,6]],[[1,2],2]],[[[1,4],6],[5,[7,1]]]]",FFh
+.db "[[[[1,5],8],[0,0]],4]",FFh
+.db "[[[7,[6,8]],3],[[5,1],[[2,8],[4,6]]]]",FFh
+.db "[3,[[[5,8],[4,5]],[[7,7],8]]]",FFh
+.db "[[6,[7,[8,2]]],[[9,0],0]]",FFh
+.db "[[[8,[7,6]],1],[[2,4],6]]",FFh
+.db "[[[[0,4],2],[0,7]],[6,6]]",FFh
+.db "[1,[[1,9],[9,3]]]",FFh
+.db "[[[[5,2],[5,3]],[[9,0],4]],2]",FFh
+.db "[[[[5,5],3],[7,[1,2]]],[6,[7,2]]]",FFh
+.db "[[[[2,1],3],8],[[2,[8,2]],[7,4]]]",FFh
+.db "[[8,[9,[1,8]]],[[[4,4],[0,6]],[6,3]]]",FFh
+.db "[[[1,6],[1,[2,5]]],0]",FFh
+.db "[[[[0,1],[7,2]],[[7,2],3]],[2,[[7,8],[0,7]]]]",FFh
+.db "[[[[1,8],8],[[5,7],[3,4]]],[[[2,5],[7,4]],[[8,4],9]]]",FFh
+.db "[[[2,2],[5,[1,0]]],[[[6,6],[3,0]],[[8,5],5]]]",FFh
+.db "[[[[8,2],[4,8]],[9,4]],[[8,[7,9]],0]]",FFh
+.db "[[3,[5,[2,4]]],[[[8,1],0],[[0,4],[4,5]]]]",FFh
+.db "[[5,[9,[3,8]]],[4,[1,[5,2]]]]",FFh
+.db "[[[3,[0,6]],[7,[8,7]]],[[6,8],[[8,7],0]]]",FFh
+.db "[[[[0,2],5],[4,6]],3]",FFh
+.db "[[6,7],[[1,[4,6]],9]]",FFh
+.db "[7,[3,[[8,8],5]]]",FFh
+.endif
+.db FFh
+INPUT_END:
