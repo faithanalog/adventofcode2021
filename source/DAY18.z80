@@ -49,7 +49,7 @@ Main:
     call sumInputSnailNumbers
 
     ld ix,C000h
-    call snailNumberMagnitude
+    ;call snailNumberMagnitude
 
     .var 8,part1ans
     ld bc,0
@@ -176,7 +176,7 @@ sumInputSnailNumbers:
     -:
         ld a,(ix)
         cp FFh
-        jr nz,{+}
+        jr nz,_sumEOF
 
         ld iy,C800h
         call parseSnailNumber
@@ -185,11 +185,11 @@ sumInputSnailNumbers:
         ld ix,C000h
         ld iy,C800h
         ld hl,D000h
-        call addSnailNumbers
+        ;call addSnailNumbers
 
         ld ix,D000h
         ld iy,C000h
-        call reduceSnailNumber
+        ;call reduceSnailNumber
 
         ; IX points to output, which it is, copy to C000h if its wrong
         push ix
@@ -205,6 +205,7 @@ sumInputSnailNumbers:
         +:
         pop ix
         jr {-}
+    _sumEOF:
     ret
 
 
