@@ -48,24 +48,10 @@ Main:
 
     call sumInputSnailNumbers
 
-    ;ld ix,INPUT
-    ;ld iy,C000h
-    ;call parseSnailNumber
-
-    ;ld ix,C000h
-    ;call snailNumberMagnitude
-
-
-    .var 8,part1ans
-;    ld bc,0
-;    ld (part1ans),hl
-;    ld (part1ans + 2),de
-;    ld (part1ans + 4),bc
-;    ld (part1ans + 6),bc
-
-    ;ld hl,D000h
+    ; copy the final reduced sum t oprint
+    ld hl,C000h
     ld de,saveSScreen
-    ld b,128
+    ld b,72
     -:
         ld a,(hl)
         ld (de),a
@@ -74,6 +60,22 @@ Main:
         djnz {-}
     ld a,FFh
     ld (de),a
+
+    ld ix,C000h
+    call snailNumberMagnitude
+
+    .var 4,part1ans
+    ld bc,0
+    ld (part1ans),hl
+    ld (part1ans + 2),de
+
+
+    call maxPairwiseMagnitude
+
+    .var 4,part2ans
+    ld bc,0
+    ld (part2ans),hl
+    ld (part2ans + 2),bc
 
 
     ; restore the world
@@ -111,28 +113,28 @@ Main:
         
 
 
-;    ld hl,part1ans
-;    call ConvertToBCD
-;    ld a,0
-;    ld (curRow),a
-;    ld (curCol),a
-;    ld hl,bcdRam
-;    call DispBCD
+    ld hl,part1ans
+    call ConvertToBCD
+    ld a,6
+    ld (curRow),a
+    ld a,0
+    ld (curCol),a
+    ld hl,bcdRam
+    call DispBCD
 
-;    ld hl,part2ans
-;    call ConvertToBCD
-;    ld a,2
-;    ld (curRow),a
-;    ld a,0
-;    ld (curCol),a
-;    ld hl,bcdRam
-;    call DispBCD
+    ld hl,part2ans
+    call ConvertToBCD
+    ld a,7
+    ld (curRow),a
+    ld a,0
+    ld (curCol),a
+    ld hl,bcdRam
+    call DispBCD
 
     b_call(_GetKey)
 
     ret
 
-.define BCD64BIT
 .include "source/bcd.z80"
 
 ; ix = number
@@ -247,6 +249,58 @@ sumInputSnailNumbers:
     ld hl,C000h
     ret
 
+; find the max pairwise magnitude of any two pairs in the input list
+; addition isnt commutative so we gotta try every pair with every pair
+maxPairwiseMagnitude:
+    .var 2, _maxSeenMag
+    ld hl,0
+    ld (_maxSeenMag),hl
+
+    ld ix,INPUT
+    _leftPairwise:
+        ld iy,C000h
+        call parseSnailNumber
+        push ix
+
+        ld ix,INPUT
+        _rightPairwise:
+            ld iy,C800h
+            call parseSnailNumber
+            push ix
+
+            ld ix,C000h
+            ld iy,C800h
+            ld hl,D000h
+            call addSnailNumbers
+
+            ld ix,D000h
+            ld iy,D800h
+            call reduceSnailNumber
+
+            ; IX = output
+            call snailNumberMagnitude
+            ex de,hl ; DE = new magnitude
+            ld hl,(_maxSeenMag)
+            or a
+            sbc hl,de
+            ; carry means new is bigger
+            jr nc,{+}
+                ld (_maxSeenMag),de
+            +:
+
+            pop ix
+            ld a,(ix)
+            cp FFh
+            jr nz,_rightPairwise
+        pop ix
+        ld a,(ix)
+        cp FFh
+        jr nz,_leftPairwise
+
+    ld hl,(_maxSeenMag)
+    ret
+
+
 
 ; ix = left
 ; iy = right
@@ -276,7 +330,7 @@ addSnailNumbers:
 .var 1,pairDepth
 reduceSnailNumber:
     ;ld b,7
-    ld b,10
+    ;ld b,1
     _reductionCycle:
         push bc
         push ix
@@ -285,24 +339,28 @@ reduceSnailNumber:
         pop ix ; swap ix/iy
         pop iy
         pop bc
-        ;jr z,_reductionCycle
-        djnz _reductionCycle
+        jr z,_reductionCycle
+        ;djnz _reductionCycle
     ret
 
     ; One reduction step, return z if a reduction happened else nz
     _reductionStep:
-        ; how far are we into the string
-        ld b,0
+
+        .var 2,_reductionSrcAddr
+        .var 2,_reductionDstAddr
+        ld (_reductionSrcAddr),ix
+        ld (_reductionDstAddr),iy
+
+        ; Explosion scan
+        ld b,0    ; how far are we into the string
         ld a,0
         ld (pairDepth),a
-
-        ; need to split into explosion and split scans
-        _reductionScan:
+        _explosionScan:
             inc b
 
             ld a,(ix)
             cp FFh
-            jr z,_reductionEOL
+            jr z,_explosionEOL
 
             ld hl,pairDepth
 
@@ -316,7 +374,7 @@ reduceSnailNumber:
                 ld (iy),'['
                 inc ix
                 inc iy
-                jr _reductionScan
+                jr _explosionScan
             +:
 
             cp ']'
@@ -325,7 +383,41 @@ reduceSnailNumber:
                 ld (iy),a
                 inc ix
                 inc iy
-                jr _reductionScan
+                jr _explosionScan
+            +:
+
+
+            ld a,(ix)
+            ld (iy),a
+            inc ix
+            inc iy
+            jr _explosionScan
+        _explosionEOL:
+        ld (iy),a
+
+        ld ix,(_reductionSrcAddr)
+        ld iy,(_reductionDstAddr)
+
+        ; Split doesnt need depth
+        _splitScan:
+            ld a,(ix)
+            cp FFh
+            jr z,_splitEOL
+
+            cp '['
+            jr nz,{+}
+                ld (iy),a
+                inc ix
+                inc iy
+                jr _splitScan
+            +:
+
+            cp ']'
+            jr nz,{+}
+                ld (iy),a
+                inc ix
+                inc iy
+                jr _splitScan
             +:
 
 
@@ -337,8 +429,8 @@ reduceSnailNumber:
             ld (iy),a
             inc ix
             inc iy
-            jr _reductionScan
-        _reductionEOL:
+            jr _splitScan
+        _splitEOL:
         ld (iy),a
         xor a
         inc a
@@ -347,7 +439,6 @@ reduceSnailNumber:
     _explodeSnailNumber:
         ; if we're on a digit and the depth is >=5 then we need to explode
         ; first, look-back in the destination to add to the leftmost number
-        push bc
         push iy
         dec iy
         dec b
@@ -364,7 +455,6 @@ reduceSnailNumber:
             djnz _explodeIntoLeft
         _explodeIntoLeftDone:
         pop iy
-        pop bc
 
         ; This pair gets replaced with a 0
         ld (iy),0
@@ -449,7 +539,7 @@ parseSnailNumber:
 
 
 INPUT:
-.define DEBUG
+;.define DEBUG
 .ifdef DEBUG
 ;.db "[[[[8,7],[7,7]],[[8,6],[7,7]]],[[[0,7],[6,6]],[8,7]]]",FFh
 ;.db FFh
@@ -467,8 +557,8 @@ INPUT:
 ;.db FFh
 
 
-.db "[[[0,[4,5]],[0,0]],[[[4,5],[2,6]],[9,5]]]",FFh
-.db "[7,[[[3,7],[4,3]],[[6,3],[8,8]]]]",FFh
+;.db "[[[0,[4,5]],[0,0]],[[[4,5],[2,6]],[9,5]]]",FFh
+;.db "[7,[[[3,7],[4,3]],[[6,3],[8,8]]]]",FFh
 ;.db "[[2,[[0,8],[3,4]]],[[[6,7],1],[7,[1,6]]]]",FFh
 ;.db "[[[[2,4],7],[6,[0,5]]],[[[6,8],[2,8]],[[2,1],[4,5]]]]",FFh
 ;.db "[7,[5,[[3,8],[1,4]]]]",FFh
@@ -477,7 +567,7 @@ INPUT:
 ;.db "[1,[[[9,3],9],[[9,0],[0,7]]]]",FFh
 ;.db "[[[5,[7,4]],7],1]",FFh
 ;.db "[[[[4,2],2],6],[8,7]]",FFh
-.db FFh
+;.db FFh
 
 .db "[[[0,[5,8]],[[1,7],[9,6]]],[[4,[1,2]],[[1,4],2]]]",FFh
 .db "[[[5,[2,8]],4],[5,[[9,9],0]]]",FFh
