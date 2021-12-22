@@ -67,7 +67,7 @@ Main:
     .var 4,part1ans
     ld bc,0
     ld (part1ans),hl
-    ld (part1ans + 2),de
+    ld (part1ans + 2),bc
 
 
     call maxPairwiseMagnitude
@@ -144,7 +144,6 @@ snailNumberMagnitude:
 
     ; mag is literal if not a pair
     jr z,{+}
-        ld de,0
         ld h,0
         ld l,a
         ret
@@ -153,49 +152,32 @@ snailNumberMagnitude:
     ; read l
     call snailNumberMagnitude
 
-    ; mult DE:HL * 3
-    push de
+    ; mult HL * 3
     push hl ; save the 1x
 
     sla l
     rl h
-    rl e
-    rl d
 
     ; add the 1x
-    pop bc
-    add hl,bc
+    pop de
+    add hl,de
 
-    pop bc
-    ex de,hl
-    adc hl,bc
-    ex de,hl
-
-    ; save DE:HL
-    push de
+    ; save HL
     push hl
 
     ; read r
     call snailNumberMagnitude
 
-    ; mult DE:HL * 2
+    ; mult HL * 2
     sla l
     rl h
-    rl e
-    rl d
 
     ; Add left
-    pop bc
-    add hl,bc
-
-    pop bc
-    ex de,hl
-    adc hl,bc
-    ex de,hl
+    pop de
+    add hl,de
 
     ; skip right bracket
     inc ix
-    
     ret
 
 
